@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Test Socket.io</title>
+  </head>
+  <body>
+    <h2>Test Chat Real-time</h2>
+
+    <input id="message" placeholder="Nhập tin nhắn..." />
+    <button onclick="sendMessage()">Gửi</button>
+
+    <div
+      id="messages"
+      style="
+        margin-top: 20px;
+        border: 1px solid #ccc;
+        padding: 10px;
+        height: 300px;
+        overflow-y: auto;
+      "
+    ></div>
+
+    <script src="http://localhost:5000/socket.io/socket.io.js"></script>
+    <script>
+      const conversationId = "6a36637dd82d85d3c46c813f"; // ID conversation lúc nãy
+
+      const socket = io("http://localhost:5000");
+
+      // Vào phòng chat
+      socket.on("connect", () => {
+        console.log("Đã kết nối:", socket.id);
+        socket.emit("join_conversation", conversationId);
+        addMessage("✅ Đã kết nối server!");
+      });
+
+      // Nhận tin nhắn
+      socket.on("receive_message", (data) => {
+        addMessage(`👤 ${data.senderId}: ${data.content}`);
+      });
+
+      // Gửi tin nhắn
+      function sendMessage() {
+        const content = document.getElementById("message").value;
+        if (!content) return;
+
+        const messageData = {
+          conversationId,
+          senderId: "Nguoi Mua Test",
+          content,
+        };
+
+        socket.emit("send_message", messageData);
+        addMessage(`🙋 Tôi: ${content}`);
+        document.getElementById("message").value = "";
+      }
+
+      function addMessage(text) {
+        const div = document.getElementById("messages");
+        div.innerHTML += `<p>${text}</p>`;
+        div.scrollTop = div.scrollHeight;
+      }
+    </script>
+  </body>
+</html>
