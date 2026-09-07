@@ -1,4 +1,5 @@
 const Notification = require("../models/Notification");
+const respondServerError = require("../utils/respondServerError");
 
 // 1. Lấy danh sách thông báo của người dùng hiện tại
 exports.getNotifications = async (req, res) => {
@@ -10,9 +11,7 @@ exports.getNotifications = async (req, res) => {
 
     res.status(200).json(notifications);
   } catch (error) {
-    res
-      .status(500)
-      .json({ message: "Lỗi server khi lấy thông báo", error: error.message });
+    respondServerError(res, error, "Lỗi server khi lấy thông báo");
   }
 };
 
@@ -26,11 +25,6 @@ exports.markAllAsRead = async (req, res) => {
     );
     res.status(200).json({ message: "Đã đánh dấu đọc tất cả thông báo" });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        message: "Lỗi server khi cập nhật thông báo",
-        error: error.message,
-      });
+    respondServerError(res, error, "Lỗi server khi cập nhật thông báo");
   }
 };

@@ -1,5 +1,6 @@
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
+const respondServerError = require("../utils/respondServerError");
 
 // 1. Xem profile cá nhân
 exports.getProfile = async (req, res) => {
@@ -10,22 +11,35 @@ exports.getProfile = async (req, res) => {
     if (!user) return res.status(404).json({ message: "Không tìm thấy user" });
     res.status(200).json(user);
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
 // 2. Sửa thông tin cá nhân
+// ĐÃ SỬA: findByIdAndUpdate() trước đây không bật runValidators, nên
+// "required" của fullName trong User model không có tác dụng khi
+// update (chỉ áp dụng cho save()/create()) -> fullName rỗng vẫn lưu
+// được. Giờ bật runValidators + context: "query" (bắt buộc để các
+// validator kiểu hàm trong schema, nếu có, đọc đúng dữ liệu đang
+// update thay vì document cũ). Chỉ 3 field fullName/university/
+// phoneNumber được đưa vào update — field lạ đã bị validateUpdateProfile
+// (Joi) chặn từ trước khi tới đây.
 exports.updateProfile = async (req, res) => {
   try {
     const { fullName, university, phoneNumber } = req.body;
     const updated = await User.findByIdAndUpdate(
       req.user.userId,
       { fullName, university, phoneNumber },
-      { new: true },
+      { new: true, runValidators: true, context: "query" },
     ).select("-password -otp -otpExpires");
+
+    if (!updated) {
+      return res.status(404).json({ message: "Không tìm thấy user" });
+    }
+
     res.status(200).json({ message: "Cập nhật thành công!", user: updated });
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -43,10 +57,11 @@ exports.uploadAvatar = async (req, res) => {
       .status(200)
       .json({ message: "Upload avatar thành công!", user: updated });
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
+// 4. Đổi mật khẩu
 // 4. Đổi mật khẩu
 exports.changePassword = async (req, res) => {
   try {
@@ -61,7 +76,7 @@ exports.changePassword = async (req, res) => {
     await user.save(); // pre-save hook tự hash
     res.status(200).json({ message: "Đổi mật khẩu thành công!" });
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -74,6 +89,6 @@ exports.getUserById = async (req, res) => {
     if (!user) return res.status(404).json({ message: "Không tìm thấy user" });
     res.status(200).json(user);
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };

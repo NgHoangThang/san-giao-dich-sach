@@ -6,6 +6,8 @@ const ShippingTracking = require("../models/ShippingTracking");
 
 const sendNotification = require("../utils/sendNotification");
 const { sendOrderAcceptedEmail } = require("../config/email");
+const respondServerError = require("../utils/respondServerError");
+const { buildVietQrUrl, buildPaymentContent } = require("../utils/buildVietQrUrl");
 
 // ======================================================
 // HÀM GỬI THÔNG BÁO AN TOÀN
@@ -54,6 +56,27 @@ const isValidPhoneNumber = (phoneNumber) => {
 };
 
 // ======================================================
+// TÓM TẮT DANH SÁCH SÁCH TRONG ĐƠN — DÙNG CHO MESSAGE THÔNG BÁO
+// ------------------------------------------------------
+// order.items đã lưu sẵn "title" (snapshot lúc đặt) nên không cần
+// query lại Book mỗi lần gửi thông báo như trước đây.
+// ======================================================
+const summarizeOrderItems = (items) => {
+  if (!Array.isArray(items) || items.length === 0) {
+    return "sách trong đơn";
+  }
+
+  if (items.length === 1) {
+    return `"${items[0].title}"`;
+  }
+
+  return `${items.length} loại sách`;
+};
+
+const totalQuantity = (items) =>
+  (items || []).reduce((sum, item) => sum + (item.quantity || 0), 0);
+
+// ======================================================
 // LƯU SHIPPING TRACKING AN TOÀN
 // Tracking lỗi sẽ không làm hỏng Order chính
 // ======================================================
@@ -91,36 +114,19 @@ const createShippingTrackingSafe = async ({
 
 // ======================================================
 // 1. USER TẠO ĐƠN MUA SÁCH
+// ------------------------------------------------------
+// ĐÃ SỬA: trước đây 1 đơn chỉ chứa đúng 1 bookId/price/quantity.
+// Giờ nhận items[] (nhiều sách khác nhau) — dùng chung cho cả luồng
+// "Thanh toán giỏ hàng" (nhiều item) và "Mua ngay" ở trang chi tiết
+// sách (mảng chỉ có 1 item), không cần API riêng cho 2 luồng.
 // ======================================================
 exports.createOrder = async (req, res) => {
+  const reservedBooks = [];
+
   try {
-    const { bookId, shippingAddress, quantity } = req.body || {};
+    const { items, shippingAddress } = req.body || {};
 
     const buyerId = req.user.userId || req.user._id;
-
-    // ==================================================
-    // KIỂM TRA BOOK ID
-    // ==================================================
-    if (!bookId) {
-      return res.status(400).json({
-        message: "Vui lòng cung cấp mã sách",
-      });
-    }
-
-    // ==================================================
-    // KIỂM TRA SỐ LƯỢNG
-    // ==================================================
-    let orderQuantity = 1;
-
-    if (quantity !== undefined && quantity !== null && quantity !== "") {
-      orderQuantity = Number(quantity);
-
-      if (!Number.isInteger(orderQuantity) || orderQuantity < 1) {
-        return res.status(400).json({
-          message: "Số lượng đặt mua không hợp lệ",
-        });
-      }
-    }
 
     // ==================================================
     // KIỂM TRA ĐỊA CHỈ
@@ -171,124 +177,164 @@ exports.createOrder = async (req, res) => {
     }
 
     // ==================================================
-    // TÌM SÁCH
+    // GỘP CÁC ITEM TRÙNG bookId (client lỡ gửi 2 lần cùng 1 sách)
     // ==================================================
-    const book = await Book.findById(bookId);
+    const quantityByBookId = new Map();
 
-    if (!book) {
-      return res.status(404).json({
-        message: "Không tìm thấy sách",
-      });
+    for (const rawItem of items) {
+      const bookId = String(rawItem.bookId);
+      const quantity = Number(rawItem.quantity) || 1;
+
+      quantityByBookId.set(bookId, (quantityByBookId.get(bookId) || 0) + quantity);
     }
 
-    if (!book.sellerId) {
-      return res.status(400).json({
-        message: "Sách này chưa có thông tin người bán",
-      });
-    }
-
-    // ==================================================
-    // KHÔNG CHO MUA SÁCH CỦA CHÍNH MÌNH
-    // ==================================================
-    if (book.sellerId.toString() === buyerId.toString()) {
-      return res.status(400).json({
-        message: "Bạn không thể tự mua sách của chính mình",
-      });
-    }
-
-    // ==================================================
-    // CHỈ AVAILABLE MỚI ĐƯỢC MUA
-    // ==================================================
-    if (book.status !== "available") {
-      let message = "Sách này hiện không thể đặt mua";
-
-      if (book.status === "sold") {
-        message = "Sách này đã được bán hết";
-      }
-
-      if (book.status === "hidden") {
-        message = "Sách này hiện đang bị ẩn";
-      }
-
-      if (book.status === "deleted") {
-        message = "Sách này không còn tồn tại";
-      }
-
-      return res.status(400).json({
-        message,
-      });
-    }
-
-    // ==================================================
-    // KHÔNG CHO USER TẠO TRÙNG ĐƠN
-    // ==================================================
-    const existingOrder = await Order.findOne({
-      buyerId,
-      bookId,
-      status: {
-        $in: ["pending", "confirmed", "preparing", "shipping", "delivered"],
-      },
-    });
-
-    if (existingOrder) {
-      return res.status(400).json({
-        message: "Bạn đã đặt mua cuốn sách này rồi.",
-      });
-    }
-
-    // ==================================================
-    // TRỪ KHO AN TOÀN
-    // ==================================================
-    const reservedBook = await Book.findOneAndUpdate(
-      {
-        _id: bookId,
-        status: "available",
-        quantity: {
-          $gte: orderQuantity,
-        },
-      },
-      {
-        $inc: {
-          quantity: -orderQuantity,
-        },
-      },
-      {
-        new: true,
-      },
+    const requestedItems = Array.from(quantityByBookId.entries()).map(
+      ([bookId, quantity]) => ({ bookId, quantity }),
     );
 
-    if (!reservedBook) {
-      return res.status(400).json({
-        message: `Sách chỉ còn lại không đủ ${orderQuantity} cuốn. Vui lòng chọn số lượng ít hơn.`,
+    // ==================================================
+    // KIỂM TRA + TRỪ KHO TỪNG SÁCH MỘT
+    // Dừng ngay khi 1 sách lỗi, rồi hoàn lại kho cho những sách đã
+    // trừ thành công trước đó trong CHÍNH request này (rollback).
+    // ==================================================
+    let sellerId = null;
+    let failMessage = null;
+
+    for (const item of requestedItems) {
+      const book = await Book.findById(item.bookId);
+
+      if (!book) {
+        failMessage = "Không tìm thấy sách";
+        break;
+      }
+
+      if (!book.sellerId) {
+        failMessage = `Sách "${book.title}" chưa có thông tin người bán`;
+        break;
+      }
+
+      if (book.sellerId.toString() === buyerId.toString()) {
+        failMessage = `Bạn không thể tự mua sách "${book.title}" của chính mình`;
+        break;
+      }
+
+      // Hệ thống hiện chỉ có 1 shop/admin duy nhất — mọi sách trong
+      // đơn luôn phải cùng 1 người bán.
+      if (sellerId && sellerId.toString() !== book.sellerId.toString()) {
+        failMessage = "Các sách trong đơn phải thuộc cùng một người bán";
+        break;
+      }
+
+      sellerId = book.sellerId;
+
+      if (book.status !== "available") {
+        let message = `Sách "${book.title}" hiện không thể đặt mua`;
+
+        if (book.status === "sold") {
+          message = `Sách "${book.title}" đã được bán hết`;
+        }
+
+        if (book.status === "hidden") {
+          message = `Sách "${book.title}" hiện đang bị ẩn`;
+        }
+
+        failMessage = message;
+        break;
+      }
+
+      // Không cho đặt trùng khi đang có đơn hoạt động cho cùng sách này
+      const existingOrder = await Order.findOne({
+        buyerId,
+        "items.bookId": item.bookId,
+        status: {
+          $in: ["pending", "confirmed", "preparing", "shipping", "delivered"],
+        },
+      });
+
+      if (existingOrder) {
+        failMessage = `Bạn đã đặt mua sách "${book.title}" rồi.`;
+        break;
+      }
+
+      const reserved = await Book.findOneAndUpdate(
+        {
+          _id: item.bookId,
+          status: "available",
+          quantity: { $gte: item.quantity },
+        },
+        {
+          $inc: { quantity: -item.quantity },
+        },
+        {
+          new: true,
+        },
+      );
+
+      if (!reserved) {
+        failMessage = `Sách "${book.title}" chỉ còn lại không đủ ${item.quantity} cuốn. Vui lòng chọn số lượng ít hơn.`;
+        break;
+      }
+
+      if (reserved.quantity <= 0 && reserved.status !== "sold") {
+        reserved.status = "sold";
+
+        await reserved.save();
+      }
+
+      reservedBooks.push({
+        bookId: book._id,
+        title: book.title,
+        price: book.price,
+        quantity: item.quantity,
       });
     }
 
-    // ==================================================
-    // NẾU HẾT HÀNG → SOLD
-    // ==================================================
-    if (reservedBook.quantity <= 0 && reservedBook.status !== "sold") {
-      reservedBook.status = "sold";
+    if (failMessage) {
+      // ROLLBACK: hoàn lại kho cho những sách đã trừ thành công
+      for (const reservedItem of reservedBooks) {
+        const restored = await Book.findByIdAndUpdate(
+          reservedItem.bookId,
+          { $inc: { quantity: reservedItem.quantity } },
+          { new: true },
+        );
 
-      await reservedBook.save();
+        if (restored && restored.status === "sold" && restored.quantity > 0) {
+          restored.status = "available";
+
+          await restored.save();
+        }
+      }
+
+      return res.status(400).json({
+        message: failMessage,
+      });
     }
-
-    const now = new Date();
 
     // ==================================================
     // TẠO ORDER
     // ==================================================
+    const orderItems = reservedBooks.map((item) => ({
+      bookId: item.bookId,
+      title: item.title,
+      price: item.price,
+      quantity: item.quantity,
+    }));
+
+    const orderTotalPrice = orderItems.reduce(
+      (sum, item) => sum + item.price * item.quantity,
+      0,
+    );
+
+    const now = new Date();
+
     const newOrder = await Order.create({
       buyerId,
 
-      sellerId: book.sellerId,
+      sellerId,
 
-      bookId: book._id,
+      items: orderItems,
 
-      price: book.price,
-
-      quantity: orderQuantity,
-
-      totalPrice: book.price * orderQuantity,
+      totalPrice: orderTotalPrice,
 
       shippingAddress: {
         receiverName: receiverName.trim(),
@@ -336,7 +382,7 @@ exports.createOrder = async (req, res) => {
     // THÔNG BÁO ADMIN
     // ==================================================
     await sendSafeNotification(req, {
-      receiverId: book.sellerId,
+      receiverId: sellerId,
 
       senderId: buyerId,
 
@@ -344,7 +390,7 @@ exports.createOrder = async (req, res) => {
 
       title: "Có đơn đặt mua mới",
 
-      message: `Sách "${book.title}" vừa có người đặt mua.`,
+      message: `${summarizeOrderItems(orderItems)} vừa có người đặt mua.`,
 
       relatedId: newOrder._id,
     });
@@ -355,7 +401,9 @@ exports.createOrder = async (req, res) => {
     emitAdminActivity(req, {
       type: "order_created",
 
-      message: `🛒 Đơn mua mới: "${book.title}" (SL: ${newOrder.quantity})`,
+      message: `🛒 Đơn mua mới: ${summarizeOrderItems(orderItems)} (SL: ${totalQuantity(
+        orderItems,
+      )})`,
 
       amount: newOrder.totalPrice,
     });
@@ -366,13 +414,15 @@ exports.createOrder = async (req, res) => {
       order: newOrder,
     });
   } catch (error) {
-    console.error("Lỗi createOrder:", error);
+    // Nếu lỗi xảy ra SAU khi đã trừ kho (vd lỗi lúc tạo Order), vẫn
+    // phải hoàn kho để không mất hàng oan.
+    for (const reservedItem of reservedBooks) {
+      await Book.findByIdAndUpdate(reservedItem.bookId, {
+        $inc: { quantity: reservedItem.quantity },
+      }).catch(() => {});
+    }
 
-    return res.status(500).json({
-      message: "Lỗi server khi tạo đơn hàng",
-
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi tạo đơn hàng");
   }
 };
 
@@ -406,14 +456,6 @@ exports.acceptOrder = async (req, res) => {
     if (order.status !== "pending") {
       return res.status(400).json({
         message: "Chỉ đơn đang chờ xác nhận mới có thể duyệt",
-      });
-    }
-
-    const book = await Book.findById(order.bookId);
-
-    if (!book) {
-      return res.status(404).json({
-        message: "Không tìm thấy sách của đơn hàng",
       });
     }
 
@@ -474,7 +516,7 @@ exports.acceptOrder = async (req, res) => {
 
       title: "Đơn hàng đã được xác nhận",
 
-      message: `Đơn mua sách "${book.title}" của bạn đã được Admin xác nhận.`,
+      message: `Đơn mua sách ${summarizeOrderItems(order.items)} của bạn đã được Admin xác nhận.`,
 
       relatedId: order._id,
     });
@@ -491,9 +533,12 @@ exports.acceptOrder = async (req, res) => {
 
           buyerName: buyer.fullName,
 
-          bookTitle: book.title,
+          bookTitle:
+            order.items.length === 1
+              ? order.items[0].title
+              : `${order.items.length} loại sách`,
 
-          price: order.price,
+          price: order.totalPrice,
 
           orderId: order._id.toString(),
 
@@ -516,7 +561,7 @@ exports.acceptOrder = async (req, res) => {
     emitAdminActivity(req, {
       type: "order_confirmed",
 
-      message: `✅ Đã xác nhận đơn "${book.title}"`,
+      message: `✅ Đã xác nhận đơn ${summarizeOrderItems(order.items)}`,
 
       amount: 0,
     });
@@ -529,13 +574,81 @@ exports.acceptOrder = async (req, res) => {
       emailSent,
     });
   } catch (error) {
-    console.error("Lỗi acceptOrder:", error);
+    return respondServerError(res, error, "Lỗi server khi xác nhận đơn hàng");
+  }
+};
 
-    return res.status(500).json({
-      message: "Lỗi server khi xác nhận đơn hàng",
+// ======================================================
+// 2.5. ADMIN XÁC NHẬN ĐÃ NHẬN THANH TOÁN
+// confirmed, chưa paid -> paid (không đổi order.status)
+// ------------------------------------------------------
+// ĐÃ THÊM: xác nhận bằng tay sau khi Admin tự kiểm tra tài khoản
+// ngân hàng thấy tiền đã về — không có xác minh tự động (không dùng
+// webhook/API tra soát ngân hàng).
+// ======================================================
+exports.confirmPayment = async (req, res) => {
+  try {
+    const { id } = req.params;
 
-      error: error.message,
+    const sellerId = req.user.userId || req.user._id;
+
+    const order = await Order.findById(id);
+
+    if (!order) {
+      return res.status(404).json({
+        message: "Không tìm thấy đơn hàng",
+      });
+    }
+
+    if (order.sellerId.toString() !== sellerId.toString()) {
+      return res.status(403).json({
+        message: "Bạn không có quyền xử lý đơn hàng này",
+      });
+    }
+
+    if (order.status !== "confirmed") {
+      return res.status(400).json({
+        message: "Chỉ xác nhận thanh toán cho đơn đã được duyệt (confirmed).",
+      });
+    }
+
+    if (order.paymentStatus === "paid") {
+      return res.status(400).json({
+        message: "Đơn hàng này đã được xác nhận thanh toán trước đó.",
+      });
+    }
+
+    order.paymentStatus = "paid";
+
+    order.paymentConfirmedAt = new Date();
+
+    await order.save();
+
+    await sendSafeNotification(req, {
+      receiverId: order.buyerId,
+
+      senderId: sellerId,
+
+      type: "payment_confirmed",
+
+      title: "Đã xác nhận thanh toán",
+
+      message: `Đã xác nhận thanh toán đơn ${summarizeOrderItems(order.items)}, đang chuẩn bị hàng cho bạn.`,
+
+      relatedId: order._id,
     });
+
+    return res.status(200).json({
+      message: "Đã xác nhận thanh toán đơn hàng!",
+
+      order,
+    });
+  } catch (error) {
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi xác nhận thanh toán",
+    );
   }
 };
 
@@ -566,6 +679,14 @@ exports.prepareOrder = async (req, res) => {
     if (order.status !== "confirmed") {
       return res.status(400).json({
         message: "Đơn hàng phải được xác nhận trước khi chuẩn bị.",
+      });
+    }
+
+    // ĐÃ THÊM: bắt buộc thanh toán QR xong mới được chuẩn bị hàng —
+    // "!== paid" để đơn cũ (chưa có field paymentStatus) cũng bị chặn.
+    if (order.paymentStatus !== "paid") {
+      return res.status(400).json({
+        message: "Đơn hàng chưa được thanh toán, không thể chuyển sang chuẩn bị hàng.",
       });
     }
 
@@ -605,8 +726,6 @@ exports.prepareOrder = async (req, res) => {
       updatedBy: sellerId,
     });
 
-    const book = await Book.findById(order.bookId).select("title");
-
     await sendSafeNotification(req, {
       receiverId: order.buyerId,
 
@@ -616,9 +735,7 @@ exports.prepareOrder = async (req, res) => {
 
       title: "Đơn hàng đang được chuẩn bị",
 
-      message: `Sách "${
-        book?.title || "Không xác định"
-      }" đang được chuẩn bị để giao cho bạn.`,
+      message: `Đơn sách ${summarizeOrderItems(order.items)} đang được chuẩn bị để giao cho bạn.`,
 
       relatedId: order._id,
     });
@@ -629,13 +746,7 @@ exports.prepareOrder = async (req, res) => {
       order,
     });
   } catch (error) {
-    console.error("Lỗi prepareOrder:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi chuẩn bị đơn hàng",
-
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi chuẩn bị đơn hàng");
   }
 };
 
@@ -753,8 +864,6 @@ exports.shipOrder = async (req, res) => {
       updatedBy: sellerId,
     });
 
-    const book = await Book.findById(order.bookId).select("title");
-
     await sendSafeNotification(req, {
       receiverId: order.buyerId,
 
@@ -764,9 +873,7 @@ exports.shipOrder = async (req, res) => {
 
       title: "Đơn hàng đang được giao",
 
-      message: `Đơn sách "${
-        book?.title || "Không xác định"
-      }" đã bắt đầu được giao.`,
+      message: `Đơn sách ${summarizeOrderItems(order.items)} đã bắt đầu được giao.`,
 
       relatedId: order._id,
     });
@@ -777,13 +884,7 @@ exports.shipOrder = async (req, res) => {
       order,
     });
   } catch (error) {
-    console.error("Lỗi shipOrder:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi bắt đầu giao hàng",
-
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi bắt đầu giao hàng");
   }
 };
 
@@ -910,8 +1011,6 @@ exports.updateShipping = async (req, res) => {
       updatedBy: sellerId,
     });
 
-    const book = await Book.findById(order.bookId).select("title");
-
     // ==================================================
     // THÔNG BÁO USER
     // ==================================================
@@ -926,9 +1025,7 @@ exports.updateShipping = async (req, res) => {
 
       message:
         shippingNote?.trim() ||
-        `Thông tin giao đơn "${
-          book?.title || "Không xác định"
-        }" vừa được cập nhật.`,
+        `Thông tin giao đơn ${summarizeOrderItems(order.items)} vừa được cập nhật.`,
 
       relatedId: order._id,
     });
@@ -939,13 +1036,7 @@ exports.updateShipping = async (req, res) => {
       order,
     });
   } catch (error) {
-    console.error("Lỗi updateShipping:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi cập nhật vận chuyển",
-
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi cập nhật vận chuyển");
   }
 };
 
@@ -1020,8 +1111,6 @@ exports.deliverOrder = async (req, res) => {
       updatedBy: sellerId,
     });
 
-    const book = await Book.findById(order.bookId).select("title");
-
     await sendSafeNotification(req, {
       receiverId: order.buyerId,
 
@@ -1031,9 +1120,7 @@ exports.deliverOrder = async (req, res) => {
 
       title: "Đơn hàng đã được giao",
 
-      message: `Đơn sách "${
-        book?.title || "Không xác định"
-      }" đã được giao. Vui lòng xác nhận khi bạn đã nhận được sách.`,
+      message: `Đơn sách ${summarizeOrderItems(order.items)} đã được giao. Vui lòng xác nhận khi bạn đã nhận được sách.`,
 
       relatedId: order._id,
     });
@@ -1044,13 +1131,7 @@ exports.deliverOrder = async (req, res) => {
       order,
     });
   } catch (error) {
-    console.error("Lỗi deliverOrder:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi xác nhận giao hàng",
-
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi xác nhận giao hàng");
   }
 };
 
@@ -1127,8 +1208,6 @@ exports.completeOrder = async (req, res) => {
       updatedBy: buyerId,
     });
 
-    const book = await Book.findById(order.bookId).select("title");
-
     // ==================================================
     // THÔNG BÁO ADMIN
     // ==================================================
@@ -1141,9 +1220,7 @@ exports.completeOrder = async (req, res) => {
 
       title: "Đơn hàng đã hoàn thành",
 
-      message: `Người mua đã xác nhận nhận được sách "${
-        book?.title || "Không xác định"
-      }".`,
+      message: `Người mua đã xác nhận nhận được sách ${summarizeOrderItems(order.items)}.`,
 
       relatedId: order._id,
     });
@@ -1154,9 +1231,7 @@ exports.completeOrder = async (req, res) => {
     emitAdminActivity(req, {
       type: "order_completed",
 
-      message: `✅ Giao dịch "${
-        book?.title || "Không xác định"
-      }" đã hoàn thành`,
+      message: `✅ Giao dịch ${summarizeOrderItems(order.items)} đã hoàn thành`,
 
       amount: order.totalPrice,
     });
@@ -1167,13 +1242,7 @@ exports.completeOrder = async (req, res) => {
       order,
     });
   } catch (error) {
-    console.error("Lỗi completeOrder:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi hoàn thành đơn hàng",
-
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi hoàn thành đơn hàng");
   }
 };
 
@@ -1258,18 +1327,20 @@ exports.cancelOrder = async (req, res) => {
     const receiverId = isBuyer ? order.sellerId : order.buyerId;
 
     // ==================================================
-    // HOÀN LẠI KHO
+    // HOÀN LẠI KHO — cho TỪNG sách trong đơn
     // ==================================================
-    const book = await Book.findById(order.bookId);
+    for (const item of order.items) {
+      const book = await Book.findById(item.bookId);
 
-    if (book) {
-      book.quantity = (book.quantity || 0) + (order.quantity || 1);
+      if (book) {
+        book.quantity = (book.quantity || 0) + (item.quantity || 1);
 
-      if (book.status === "sold" && book.quantity > 0) {
-        book.status = "available";
+        if (book.status === "sold" && book.quantity > 0) {
+          book.status = "available";
+        }
+
+        await book.save();
       }
-
-      await book.save();
     }
 
     // ==================================================
@@ -1284,9 +1355,7 @@ exports.cancelOrder = async (req, res) => {
 
       title: "Đơn hàng đã bị hủy",
 
-      message: `Đơn đặt mua sách "${
-        book?.title || "Không xác định"
-      }" đã bị hủy.`,
+      message: `Đơn đặt mua sách ${summarizeOrderItems(order.items)} đã bị hủy.`,
 
       relatedId: order._id,
     });
@@ -1297,7 +1366,7 @@ exports.cancelOrder = async (req, res) => {
     emitAdminActivity(req, {
       type: "order_cancelled",
 
-      message: `❌ Đơn "${book?.title || "Không xác định"}" đã bị hủy`,
+      message: `❌ Đơn ${summarizeOrderItems(order.items)} đã bị hủy`,
 
       amount: 0,
     });
@@ -1308,13 +1377,7 @@ exports.cancelOrder = async (req, res) => {
       order,
     });
   } catch (error) {
-    console.error("Lỗi cancelOrder:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi hủy đơn hàng",
-
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi hủy đơn hàng");
   }
 };
 
@@ -1328,7 +1391,7 @@ exports.getBuyHistory = async (req, res) => {
     const orders = await Order.find({
       buyerId,
     })
-      .populate("bookId", "title images price status")
+      .populate("items.bookId", "title images price status")
       .populate("sellerId", "fullName university avatar phoneNumber")
       .sort({
         createdAt: -1,
@@ -1356,21 +1419,40 @@ exports.getBuyHistory = async (req, res) => {
       );
     }
 
-    const result = orders.map((order) => ({
-      ...order,
+    // ==================================================
+    // GẮN THÔNG TIN QR THANH TOÁN
+    // ------------------------------------------------------
+    // ĐÃ THÊM: chỉ đơn đã được Admin duyệt (confirmed) và chưa thanh
+    // toán mới cần hiện QR — "!== paid" để đơn cũ (không có field
+    // paymentStatus) cũng tự động rơi vào diện "chưa thanh toán".
+    // ==================================================
+    const result = orders.map((order) => {
+      const needsPayment =
+        order.status === "confirmed" && order.paymentStatus !== "paid";
 
-      hasReview: reviewedOrderIds.has(String(order._id)),
-    }));
+      const paymentContent = needsPayment
+        ? buildPaymentContent(order._id)
+        : undefined;
+
+      return {
+        ...order,
+
+        hasReview: reviewedOrderIds.has(String(order._id)),
+
+        ...(needsPayment && {
+          paymentQrUrl: buildVietQrUrl(order.totalPrice, paymentContent),
+          paymentContent,
+        }),
+      };
+    });
 
     return res.status(200).json(result);
   } catch (error) {
-    console.error("Lỗi getBuyHistory:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy lịch sử mua hàng",
-
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi lấy lịch sử mua hàng",
+    );
   }
 };
 
@@ -1384,7 +1466,7 @@ exports.getSellOrders = async (req, res) => {
     const orders = await Order.find({
       sellerId,
     })
-      .populate("bookId", "title images price status")
+      .populate("items.bookId", "title images price status")
       .populate("buyerId", "fullName university phoneNumber avatar")
       .sort({
         createdAt: -1,
@@ -1392,13 +1474,11 @@ exports.getSellOrders = async (req, res) => {
 
     return res.status(200).json(orders);
   } catch (error) {
-    console.error("Lỗi getSellOrders:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy danh sách đơn hàng",
-
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi lấy danh sách đơn hàng",
+    );
   }
 };
 // ======================================================
@@ -1462,12 +1542,10 @@ exports.getOrderTracking = async (req, res) => {
       tracking,
     });
   } catch (error) {
-    console.error("Lỗi getOrderTracking:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy lịch sử vận chuyển",
-
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi lấy lịch sử vận chuyển",
+    );
   }
 };

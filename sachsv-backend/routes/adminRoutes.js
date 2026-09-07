@@ -4,6 +4,7 @@ const router = express.Router();
 const adminController = require("../controllers/adminController");
 const authMiddleware = require("../middleware/authMiddleware");
 const { authorizeRoles } = require("../middleware/roleMiddleware");
+const validateObjectId = require("../middleware/validateObjectId");
 
 // Kiểm tra đăng nhập và quyền Admin cho toàn bộ route
 router.use(authMiddleware, authorizeRoles("admin"));
@@ -23,10 +24,18 @@ router.get("/dashboard", adminController.getDashboardStats);
 router.get("/users", adminController.getAllUsers);
 
 // Khóa tài khoản
-router.patch("/users/:id/lock", adminController.lockUser);
+router.patch(
+  "/users/:id/lock",
+  validateObjectId("id"),
+  adminController.lockUser,
+);
 
 // Mở khóa tài khoản
-router.patch("/users/:id/unlock", adminController.unlockUser);
+router.patch(
+  "/users/:id/unlock",
+  validateObjectId("id"),
+  adminController.unlockUser,
+);
 
 // ======================================================
 // QUẢN LÝ SÁCH
@@ -36,7 +45,11 @@ router.patch("/users/:id/unlock", adminController.unlockUser);
 router.get("/books", adminController.getAllBooksForAdmin);
 
 // Xóa sách vi phạm
-router.delete("/books/:id", adminController.deleteBookAdmin);
+router.delete(
+  "/books/:id",
+  validateObjectId("id"),
+  adminController.deleteBookAdmin,
+);
 
 // ======================================================
 // QUẢN LÝ TỐ CÁO
@@ -46,10 +59,18 @@ router.delete("/books/:id", adminController.deleteBookAdmin);
 router.get("/reports", adminController.getAllReports);
 
 // Cập nhật trạng thái tố cáo
-router.patch("/reports/:id/status", adminController.updateReportStatus);
+router.patch(
+  "/reports/:id/status",
+  validateObjectId("id"),
+  adminController.updateReportStatus,
+);
 
 // Xóa vĩnh viễn tố cáo
-router.delete("/reports/:id", adminController.deleteReport);
+router.delete(
+  "/reports/:id",
+  validateObjectId("id"),
+  adminController.deleteReport,
+);
 
 // ======================================================
 // QUẢN LÝ ĐÁNH GIÁ

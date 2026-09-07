@@ -10,24 +10,38 @@ exports.validateOrder = (req, res, next) => {
 
   const schema = Joi.object({
     // ==================================================
-    // ID SÁCH
+    // DANH SÁCH SÁCH TRONG ĐƠN
+    // ------------------------------------------------------
+    // ĐÃ SỬA: trước đây 1 đơn chỉ nhận đúng 1 bookId/quantity. Giờ
+    // nhận items[] — dùng chung cho cả "Thanh toán giỏ hàng" (nhiều
+    // item) và "Mua ngay" ở trang chi tiết sách (mảng 1 item).
     // ==================================================
-    bookId: Joi.string().hex().length(24).required().messages({
-      "string.base": "ID sách không hợp lệ",
-      "string.hex": "ID sách phải là chuỗi hexa",
-      "string.length": "ID sách phải có đúng 24 ký tự",
-      "any.required": "Thiếu ID sách",
-    }),
+    items: Joi.array()
+      .items(
+        Joi.object({
+          bookId: Joi.string().hex().length(24).required().messages({
+            "string.hex": "ID sách phải là chuỗi hexa",
+            "string.length": "ID sách phải có đúng 24 ký tự",
+            "any.required": "Thiếu ID sách",
+          }),
 
-    // ==================================================
-    // SỐ LƯỢNG ĐẶT MUA (không bắt buộc, mặc định 1 ở controller)
-    // ==================================================
-    quantity: Joi.number().integer().min(1).max(50).messages({
-      "number.base": "Số lượng không hợp lệ",
-      "number.integer": "Số lượng phải là số nguyên",
-      "number.min": "Số lượng phải lớn hơn 0",
-      "number.max": "Số lượng tối đa mỗi đơn là 50 cuốn",
-    }),
+          quantity: Joi.number().integer().min(1).max(50).required().messages({
+            "number.base": "Số lượng không hợp lệ",
+            "number.integer": "Số lượng phải là số nguyên",
+            "number.min": "Số lượng phải lớn hơn 0",
+            "number.max": "Số lượng tối đa mỗi sách là 50 cuốn",
+            "any.required": "Thiếu số lượng",
+          }),
+        }),
+      )
+      .min(1)
+      .max(20)
+      .required()
+      .messages({
+        "array.min": "Đơn hàng phải có ít nhất 1 sách",
+        "array.max": "Đơn hàng chỉ được tối đa 20 loại sách khác nhau",
+        "any.required": "Thiếu danh sách sách trong đơn hàng",
+      }),
 
     // ==================================================
     // THÔNG TIN GIAO HÀNG
@@ -121,6 +135,51 @@ exports.validateReview = (req, res, next) => {
 
     comment: Joi.string().trim().allow("").max(500).messages({
       "string.max": "Bình luận không được vượt quá 500 ký tự",
+    }),
+  });
+
+  const { error } = schema.validate(req.body);
+
+  if (error) {
+    return res.status(400).json({
+      message: "Dữ liệu không hợp lệ",
+      details: error.details[0].message,
+    });
+  }
+
+  next();
+};
+
+// ======================================================
+// 3. VALIDATE KHI USER GỬI TỐ CÁO
+// ------------------------------------------------------
+// ĐÃ THÊM: route này trước đây không có Joi, chỉ kiểm tra truthy
+// đơn giản trong controller. targetType/targetId sai định dạng sẽ
+// khiến Mongoose ném lỗi (enum/CastError), rơi vào catch chung và
+// trả về 500 thay vì 400.
+// ======================================================
+exports.validateCreateReport = (req, res, next) => {
+  const schema = Joi.object({
+    targetId: Joi.string().hex().length(24).required().messages({
+      "string.hex": "ID đối tượng bị tố cáo không hợp lệ",
+      "string.length": "ID đối tượng bị tố cáo phải có đúng 24 ký tự",
+      "any.required": "Thiếu ID đối tượng bị tố cáo",
+    }),
+
+    targetType: Joi.string().valid("book", "user").required().messages({
+      "any.only": "Loại đối tượng chỉ được là sách hoặc người dùng",
+      "any.required": "Thiếu loại đối tượng bị tố cáo",
+    }),
+
+    reason: Joi.string().trim().min(3).max(300).required().messages({
+      "string.empty": "Vui lòng nhập lý do tố cáo",
+      "string.min": "Lý do tố cáo quá ngắn",
+      "string.max": "Lý do tố cáo không được vượt quá 300 ký tự",
+      "any.required": "Vui lòng nhập lý do tố cáo",
+    }),
+
+    description: Joi.string().trim().allow("").max(1000).messages({
+      "string.max": "Mô tả không được vượt quá 1000 ký tự",
     }),
   });
 

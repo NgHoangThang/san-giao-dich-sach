@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { OAuth2Client } = require("google-auth-library");
 const { sendOTPEmail } = require("../config/email");
+const respondServerError = require("../utils/respondServerError");
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -60,7 +61,7 @@ exports.register = async (req, res) => {
       message: "Đăng ký thành công! Vui lòng xác thực email để đăng nhập.",
     });
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -132,7 +133,7 @@ exports.login = async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -258,10 +259,7 @@ exports.sendOTP = async (req, res) => {
 
     res.status(200).json(genericResponse);
   } catch (error) {
-    res.status(500).json({
-      message: "Lỗi server",
-      error: error.message,
-    });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -300,10 +298,7 @@ exports.verifyOTP = async (req, res) => {
       message: "Xác thực tài khoản thành công!",
     });
   } catch (error) {
-    res.status(500).json({
-      message: "Lỗi server",
-      error: error.message,
-    });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -335,7 +330,7 @@ exports.forgotPassword = async (req, res) => {
 
     res.status(200).json(genericResponse);
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -379,6 +374,6 @@ exports.resetPassword = async (req, res) => {
 
     res.status(200).json({ message: "Đặt lại mật khẩu thành công!" });
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };

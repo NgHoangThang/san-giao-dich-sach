@@ -4,6 +4,8 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 
 import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
+import Toast from "../components/Toast";
+import { getPlaceholderImage } from "../utils/placeholderImage";
 
 const conditionMap = {
   new: "Mới 100%",
@@ -35,6 +37,10 @@ const BookDetail = () => {
   const [orderLoading, setOrderLoading] = useState(false);
 
   const [chatLoading, setChatLoading] = useState(false);
+
+  const [cartLoading, setCartLoading] = useState(false);
+
+  const [cartToast, setCartToast] = useState(null);
 
   const [quantity, setQuantity] = useState(1);
 
@@ -247,8 +253,11 @@ const BookDetail = () => {
       setOrderLoading(true);
 
       const response = await api.post("/api/orders/create", {
-        bookId: id,
-        quantity,
+        // ĐÃ SỬA: backend đổi sang nhận items[] (dùng chung cho cả
+        // "Thanh toán giỏ hàng" và "Mua ngay") nhưng trang này vẫn gửi
+        // bookId/quantity ở cấp cao nhất -> Joi trả lỗi "Thiếu danh
+        // sách sách trong đơn hàng". Bọc lại thành mảng 1 item.
+        items: [{ bookId: id, quantity }],
 
         // Lưu snapshot địa chỉ vào Order.
         // Sau này User sửa/xóa Address thì đơn hàng cũ vẫn giữ nguyên.
@@ -279,6 +288,61 @@ const BookDetail = () => {
       );
     } finally {
       setOrderLoading(false);
+    }
+  };
+
+  // ======================================================
+  // THÊM VÀO GIỎ HÀNG
+  // ======================================================
+  const handleAddToCart = async () => {
+    if (!user) {
+      navigate("/login");
+      return;
+    }
+
+    if (!["student", "user"].includes(user.role)) {
+      alert("Chức năng giỏ hàng chỉ dành cho người mua.");
+      return;
+    }
+
+    if (book?.status !== "available") {
+      alert("Sách này hiện không thể thêm vào giỏ hàng.");
+      return;
+    }
+
+    if (cartLoading) {
+      return;
+    }
+
+    try {
+      setCartLoading(true);
+
+      const response = await api.post("/api/cart", {
+        bookId: id,
+        quantity,
+      });
+
+      setCartToast({
+        message: response.data.message || "Đã thêm vào giỏ hàng!",
+        type: "success",
+      });
+
+      // Báo cho Navbar cập nhật lại số trên icon giỏ hàng ngay, không
+      // cần F5. Dùng CustomEvent thay vì Context để không phải bọc
+      // thêm 1 lớp Provider mới chỉ cho mỗi việc này.
+      window.dispatchEvent(new Event("cart:updated"));
+    } catch (requestError) {
+      console.error("Lỗi thêm vào giỏ hàng:", requestError);
+
+      setCartToast({
+        message:
+          requestError.response?.data?.details ||
+          requestError.response?.data?.message ||
+          "Không thể thêm vào giỏ hàng.",
+        type: "error",
+      });
+    } finally {
+      setCartLoading(false);
     }
   };
 
@@ -506,7 +570,7 @@ const BookDetail = () => {
               <img
                 src={
                   bookImages[selectedImage] ||
-                  "https://via.placeholder.com/400x500?text=Chua+co+anh"
+                  getPlaceholderImage(400, 500, "Chưa có ảnh")
                 }
                 alt={book.title || "Ảnh sách"}
                 className="max-h-[400px] object-contain"
@@ -594,6 +658,17 @@ const BookDetail = () => {
                     🚩 Tố cáo
                   </button>
                 </div>
+
+                {/* Thêm vào giỏ hàng */}
+                <button
+                  type="button"
+                  onClick={handleAddToCart}
+                  disabled={cartLoading || book.status !== "available"}
+                  className="w-full py-3.5 border-2 border-[#C92127] text-[#C92127] font-bold rounded-xl hover:bg-red-50 transition-all disabled:opacity-60 disabled:cursor-not-allowed flex justify-center items-center gap-2"
+                >
+                  🛒{" "}
+                  {cartLoading ? "Đang thêm..." : "Thêm vào giỏ hàng"}
+                </button>
 
                 {/* Hai hình thức mua */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -943,7 +1018,7 @@ const BookDetail = () => {
               <img
                 src={
                   bookImages[0] ||
-                  "https://via.placeholder.com/80x100?text=Sach"
+                  getPlaceholderImage(80, 100, "Sách")
                 }
                 alt={book.title}
                 className="h-24 w-16 rounded-lg border object-cover"
@@ -1141,6 +1216,12 @@ const BookDetail = () => {
           </div>
         </div>
       )}
+
+      <Toast
+        message={cartToast?.message}
+        type={cartToast?.type}
+        onClose={() => setCartToast(null)}
+      />
     </div>
   );
 };

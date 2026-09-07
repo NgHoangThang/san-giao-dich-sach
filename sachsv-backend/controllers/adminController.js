@@ -3,6 +3,13 @@ const Book = require("../models/Book");
 const Order = require("../models/Order");
 const Report = require("../models/Report");
 const Review = require("../models/Review");
+const respondServerError = require("../utils/respondServerError");
+
+// Dùng chung logic xóa sách an toàn với bookController.deleteBook,
+// để không lặp lại lỗi 2 nơi xóa Book có 2 tiêu chuẩn an toàn khác
+// nhau (deleteBookAdmin trước đây hard-delete vô điều kiện, có thể
+// để lại Order/Conversation mồ côi).
+const { deleteBookSafely } = require("./bookController");
 
 // ======================================================
 // 1. THỐNG KÊ DASHBOARD
@@ -17,6 +24,15 @@ exports.getDashboardStats = async (req, res) => {
       status: "completed",
     });
 
+    // ĐÃ SỬA: doanh thu trước đây cộng theo "$price" (đơn giá 1 cuốn),
+    // bỏ qua quantity -> đơn mua nhiều hơn 1 cuốn bị tính thiếu doanh
+    // thu. "totalPrice" trong Order đã là price * quantity nên mới
+    // đúng là tổng tiền thật của đơn.
+    // ĐÃ THÊM: một số Order cũ (tạo trước khi field totalPrice/quantity
+    // tồn tại) không có totalPrice -> $sum bỏ qua, coi như 0, làm hụt
+    // doanh thu của các đơn cũ đó. $ifNull rơi về "$price" (tương
+    // đương totalPrice khi quantity = 1) cho tới khi các đơn này được
+    // backfill totalPrice thật sự.
     const revenueAggregation = await Order.aggregate([
       {
         $match: {
@@ -27,7 +43,9 @@ exports.getDashboardStats = async (req, res) => {
         $group: {
           _id: null,
           totalRevenue: {
-            $sum: "$price",
+            $sum: {
+              $ifNull: ["$totalPrice", "$price"],
+            },
           },
         },
       },
@@ -53,7 +71,9 @@ exports.getDashboardStats = async (req, res) => {
             },
           },
           monthlyRevenue: {
-            $sum: "$price",
+            $sum: {
+              $ifNull: ["$totalPrice", "$price"],
+            },
           },
           orderCount: {
             $sum: 1,
@@ -77,12 +97,11 @@ exports.getDashboardStats = async (req, res) => {
       monthlyStats,
     });
   } catch (error) {
-    console.error("Lỗi lấy thống kê Dashboard:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy thống kê Dashboard.",
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi lấy thống kê Dashboard.",
+    );
   }
 };
 
@@ -95,12 +114,11 @@ exports.getAllUsers = async (req, res) => {
 
     return res.status(200).json(users);
   } catch (error) {
-    console.error("Lỗi lấy danh sách người dùng:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy danh sách người dùng.",
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi lấy danh sách người dùng.",
+    );
   }
 };
 
@@ -143,12 +161,7 @@ exports.lockUser = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Lỗi khóa tài khoản:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi khóa tài khoản.",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi khóa tài khoản.");
   }
 };
 
@@ -185,12 +198,7 @@ exports.unlockUser = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Lỗi mở khóa tài khoản:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi mở khóa tài khoản.",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi mở khóa tài khoản.");
   }
 };
 
@@ -205,12 +213,7 @@ exports.getAllBooksForAdmin = async (req, res) => {
 
     return res.status(200).json(books);
   } catch (error) {
-    console.error("Lỗi Admin lấy danh sách sách:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy danh sách sách.",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi lấy danh sách sách.");
   }
 };
 
@@ -229,18 +232,31 @@ exports.deleteBookAdmin = async (req, res) => {
       });
     }
 
-    await Book.findByIdAndDelete(id);
+    // ĐÃ SỬA: trước đây gọi thẳng Book.findByIdAndDelete() không
+    // điều kiện, có thể xóa cả sách đang có Order/Conversation tham
+    // chiếu -> để lại dữ liệu mồ côi. Giờ dùng chung tiêu chuẩn an
+    // toàn với bookController.deleteBook: còn Order/Conversation thì
+    // chỉ soft-delete (status = "deleted"), không hard-delete.
+    const { hardDeleted, orderCount, conversationCount } =
+      await deleteBookSafely(book);
+
+    if (hardDeleted) {
+      return res.status(200).json({
+        message: "Đã xóa vĩnh viễn cuốn sách vi phạm khỏi hệ thống!",
+        hardDeleted: true,
+      });
+    }
 
     return res.status(200).json({
-      message: "Đã xóa vĩnh viễn cuốn sách vi phạm khỏi hệ thống!",
+      message:
+        `Không thể xóa vĩnh viễn vì cuốn sách này đang có ${orderCount} ` +
+        `đơn hàng và ${conversationCount} cuộc trò chuyện liên quan — ` +
+        `đã chuyển sang trạng thái "deleted" (ẩn khỏi cửa hàng) để không ` +
+        `làm hỏng lịch sử mua hàng của khách.`,
+      hardDeleted: false,
     });
   } catch (error) {
-    console.error("Lỗi Admin xóa sách:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi xóa sách.",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi xóa sách.");
   }
 };
 
@@ -252,11 +268,13 @@ exports.getAllReviews = async (req, res) => {
     const reviews = await Review.find()
       .populate("reviewerId", "fullName email avatar university phoneNumber")
       .populate("revieweeId", "fullName email avatar university phoneNumber")
+      // ĐÃ SỬA: Order giờ chứa nhiều sách qua items[] thay vì 1 bookId/
+      // price duy nhất — populate đúng đường dẫn mới.
       .populate({
         path: "orderId",
-        select: "bookId buyerId sellerId price status createdAt",
+        select: "items totalPrice buyerId sellerId status createdAt",
         populate: {
-          path: "bookId",
+          path: "items.bookId",
           select: "title author images price status",
         },
       })
@@ -265,12 +283,11 @@ exports.getAllReviews = async (req, res) => {
 
     return res.status(200).json(reviews);
   } catch (error) {
-    console.error("Lỗi Admin lấy danh sách đánh giá:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy danh sách đánh giá.",
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi lấy danh sách đánh giá.",
+    );
   }
 };
 
@@ -309,12 +326,11 @@ exports.getAllReports = async (req, res) => {
 
     return res.status(200).json(reportsWithTarget);
   } catch (error) {
-    console.error("Lỗi lấy danh sách tố cáo:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy danh sách tố cáo.",
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi lấy danh sách tố cáo.",
+    );
   }
 };
 
@@ -359,12 +375,11 @@ exports.updateReportStatus = async (req, res) => {
       report,
     });
   } catch (error) {
-    console.error("Lỗi cập nhật trạng thái tố cáo:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi cập nhật trạng thái tố cáo.",
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi cập nhật trạng thái tố cáo.",
+    );
   }
 };
 
@@ -387,11 +402,6 @@ exports.deleteReport = async (req, res) => {
       message: "Đã xóa tố cáo thành công.",
     });
   } catch (error) {
-    console.error("Lỗi xóa tố cáo:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi xóa tố cáo.",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi xóa tố cáo.");
   }
 };

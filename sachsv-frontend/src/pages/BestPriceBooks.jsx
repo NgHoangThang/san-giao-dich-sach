@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import api from "../services/api";
 import BookCard from "../components/BookCard";
+import { useBookCatalog } from "../hooks/useBookCatalog";
+import { BOOK_CATEGORIES } from "../constants/bookCategories";
 
 // ======================================================
 // BẢNG MÀU THEO THƯƠNG HIỆU SÁCH SV (đồng bộ với BookCard)
@@ -49,20 +50,22 @@ const resolveImageUrl = (image) => {
 const formatPrice = (price) =>
   `${Number(price || 0).toLocaleString("vi-VN")} đ`;
 
+// ĐÃ THÊM: quy đổi khoảng giá sang minPrice/maxPrice gửi lên backend
+// — biên giữ đúng như logic lọc client cũ.
 const PRICE_RANGES = [
   { key: "all", label: "Tất cả" },
-  { key: "under50", label: "Dưới 50.000đ", test: (price) => price < 50000 },
+  { key: "under50", label: "Dưới 50.000đ", bounds: { max: 49999 } },
   {
     key: "50to100",
     label: "50.000đ – 100.000đ",
-    test: (price) => price >= 50000 && price <= 100000,
+    bounds: { min: 50000, max: 100000 },
   },
   {
     key: "100to200",
     label: "100.000đ – 200.000đ",
-    test: (price) => price > 100000 && price <= 200000,
+    bounds: { min: 100001, max: 200000 },
   },
-  { key: "above200", label: "Trên 200.000đ", test: (price) => price > 200000 },
+  { key: "above200", label: "Trên 200.000đ", bounds: { min: 200001 } },
 ];
 
 const CONDITION_OPTIONS = [
@@ -79,183 +82,84 @@ const SORT_OPTIONS = [
   { key: "title", label: "Tên A–Z" },
 ];
 
-const PAGE_SIZE = 10;
-
 const BestPriceBooks = () => {
-  const [books, setBooks] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const {
+    books,
+    loading,
+    loadingMore,
+    error,
+    totalCount,
+    hasMore,
+    filters,
+    setSearch,
+    setCategory,
+    setCondition,
+    setSort,
+    setPriceRange,
+    resetFilters: resetCatalogFilters,
+    loadMore,
+    reload,
+  } = useBookCatalog({ initialFilters: { sort: "price-low" } });
 
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
+  const [priceFilterKey, setPriceFilterKey] = useState("all");
 
-  const [priceFilter, setPriceFilter] = useState("all");
-  const [conditionFilter, setConditionFilter] = useState("all");
-  const [categoryFilter, setCategoryFilter] = useState("all");
-  const [sortOption, setSortOption] = useState("price-low");
+  const handleSelectPrice = (key) => {
+    setPriceFilterKey(key);
 
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+    const range = PRICE_RANGES.find((item) => item.key === key);
 
-  const fetchBooks = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError("");
+    setPriceRange(range?.bounds?.min, range?.bounds?.max);
+  };
 
-      const response = await api.get("/api/books");
-
-      const responseBooks = Array.isArray(response.data)
-        ? response.data
-        : response.data?.books || response.data?.data || [];
-
-      setBooks(Array.isArray(responseBooks) ? responseBooks : []);
-    } catch (requestError) {
-      console.error("Lỗi tải sách giá tốt:", requestError);
-
-      setError(
-        requestError.response?.data?.message ||
-          "Không thể kết nối đến máy chủ. Vui lòng thử lại sau.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchBooks();
-  }, [fetchBooks]);
-
-  // Debounce ô tìm kiếm (350ms)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setSearch(searchInput.trim().toLowerCase());
-    }, 350);
-
-    return () => clearTimeout(timer);
-  }, [searchInput]);
-
-  // Sách còn hàng + giá > 0 (logic gốc, không đổi)
-  const bestPriceBooks = useMemo(() => {
+  // ĐÃ SỬA: sách còn hàng + giá > 0 vẫn lọc ở client trên trang đã
+  // tải (logic gốc, không đổi) — chấp nhận là xấp xỉ nhỏ vì backend
+  // chưa lọc theo status, để giữ phạm vi thay đổi gọn (đã thống nhất
+  // khi lên kế hoạch).
+  const visibleBooks = useMemo(() => {
     return books.filter(
       (book) => book.status !== "sold" && Number(book.price) > 0,
     );
   }, [books]);
 
-  // Danh mục lấy từ dữ liệu thật, không hard-code
-  const categories = useMemo(() => {
-    const unique = new Set(
-      bestPriceBooks
-        .map((book) => book.category)
-        .filter((category) => typeof category === "string" && category.trim()),
-    );
-
-    return Array.from(unique).sort((a, b) => a.localeCompare(b, "vi"));
-  }, [bestPriceBooks]);
-
-  // Thống kê nhanh tính từ dữ liệu thật
+  // Thống kê nhanh — số liệu trang trí, tính xấp xỉ trên các trang đã
+  // tải (không phải toàn bộ catalog) trừ minPrice khi đang sắp xếp
+  // theo giá thấp → cao (lúc đó sách đầu tiên chính là giá thấp nhất
+  // thật, không cần tính riêng).
   const stats = useMemo(() => {
-    if (bestPriceBooks.length === 0) {
-      return { total: 0, minPrice: null, avgPrice: null, categoryCount: 0 };
+    if (visibleBooks.length === 0) {
+      return { minPrice: null, avgPrice: null, categoryCount: 0 };
     }
 
-    const prices = bestPriceBooks.map((book) => Number(book.price));
-    const total = bestPriceBooks.length;
-    const minPrice = Math.min(...prices);
-    const avgPrice = prices.reduce((sum, price) => sum + price, 0) / total;
+    const prices = visibleBooks.map((book) => Number(book.price));
 
-    return { total, minPrice, avgPrice, categoryCount: categories.length };
-  }, [bestPriceBooks, categories.length]);
+    const minPrice =
+      filters.sort === "price-low" ? prices[0] : Math.min(...prices);
 
-  // Áp dụng filter + search + sort trên frontend
-  const filteredBooks = useMemo(() => {
-    let result = [...bestPriceBooks];
+    const avgPrice =
+      prices.reduce((sum, price) => sum + price, 0) / prices.length;
 
-    if (categoryFilter !== "all") {
-      result = result.filter((book) => book.category === categoryFilter);
-    }
+    const categoryCount = new Set(
+      visibleBooks.map((book) => book.category).filter(Boolean),
+    ).size;
 
-    if (conditionFilter !== "all") {
-      result = result.filter((book) => book.condition === conditionFilter);
-    }
-
-    if (priceFilter !== "all") {
-      const range = PRICE_RANGES.find((item) => item.key === priceFilter);
-
-      if (range?.test) {
-        result = result.filter((book) => range.test(Number(book.price)));
-      }
-    }
-
-    if (search) {
-      result = result.filter((book) => {
-        const title = (book.title || "").toLowerCase();
-        const author = (book.author || "").toLowerCase();
-        const category = (book.category || "").toLowerCase();
-
-        return (
-          title.includes(search) ||
-          author.includes(search) ||
-          category.includes(search)
-        );
-      });
-    }
-
-    switch (sortOption) {
-      case "price-high":
-        result.sort((a, b) => Number(b.price) - Number(a.price));
-        break;
-      case "newest":
-        result.sort(
-          (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
-        );
-        break;
-      case "title":
-        result.sort((a, b) =>
-          (a.title || "").localeCompare(b.title || "", "vi"),
-        );
-        break;
-      case "price-low":
-      default:
-        result.sort((a, b) => Number(a.price) - Number(b.price));
-        break;
-    }
-
-    return result;
-  }, [
-    bestPriceBooks,
-    categoryFilter,
-    conditionFilter,
-    priceFilter,
-    search,
-    sortOption,
-  ]);
-
-  // Reset phân trang mỗi khi filter/search/sort thay đổi
-  useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-  }, [categoryFilter, conditionFilter, priceFilter, search, sortOption]);
-
-  const displayedBooks = filteredBooks.slice(0, visibleCount);
-  const hasMore = visibleCount < filteredBooks.length;
+    return { minPrice, avgPrice, categoryCount };
+  }, [visibleBooks, filters.sort]);
 
   const hasActiveFilters =
-    search !== "" ||
-    priceFilter !== "all" ||
-    conditionFilter !== "all" ||
-    categoryFilter !== "all" ||
-    sortOption !== "price-low";
+    filters.search.trim() !== "" ||
+    priceFilterKey !== "all" ||
+    filters.condition !== "" ||
+    filters.category !== "" ||
+    filters.sort !== "price-low";
 
   const handleClearFilters = () => {
-    setSearchInput("");
-    setSearch("");
-    setPriceFilter("all");
-    setConditionFilter("all");
-    setCategoryFilter("all");
-    setSortOption("price-low");
+    resetCatalogFilters();
+    setPriceFilterKey("all");
   };
 
   // Ảnh sách thật để trang trí banner (chỉ khi dữ liệu có images)
   const decorativeImages = useMemo(() => {
-    return bestPriceBooks
+    return visibleBooks
       .filter((book) => book?.images?.[0])
       .slice(0, 2)
       .map((book) => ({
@@ -263,7 +167,7 @@ const BestPriceBooks = () => {
         title: book.title,
         url: resolveImageUrl(book.images[0]),
       }));
-  }, [bestPriceBooks]);
+  }, [visibleBooks]);
 
   return (
     <div
@@ -403,7 +307,7 @@ const BestPriceBooks = () => {
             {[
               {
                 label: "Tổng sách giá tốt",
-                value: stats.total > 0 ? `${stats.total}` : "—",
+                value: totalCount > 0 ? `${totalCount}` : "—",
               },
               {
                 label: "Giá thấp nhất",
@@ -475,8 +379,8 @@ const BestPriceBooks = () => {
 
             <input
               type="text"
-              value={searchInput}
-              onChange={(event) => setSearchInput(event.target.value)}
+              value={filters.search}
+              onChange={(event) => setSearch(event.target.value)}
               placeholder="Tìm sách giá tốt theo tên hoặc tác giả..."
               className="w-full bg-transparent text-sm outline-none"
               style={{
@@ -484,10 +388,10 @@ const BestPriceBooks = () => {
               }}
             />
 
-            {searchInput && (
+            {filters.search && (
               <button
                 type="button"
-                onClick={() => setSearchInput("")}
+                onClick={() => setSearch("")}
                 aria-label="Xóa từ khóa"
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white"
                 style={{
@@ -503,13 +407,13 @@ const BestPriceBooks = () => {
         {/* BỘ LỌC GIÁ NHANH */}
         <div className="mt-4 flex flex-wrap gap-2">
           {PRICE_RANGES.map((range) => {
-            const isActive = priceFilter === range.key;
+            const isActive = priceFilterKey === range.key;
 
             return (
               <button
                 key={range.key}
                 type="button"
-                onClick={() => setPriceFilter(range.key)}
+                onClick={() => handleSelectPrice(range.key)}
                 className="rounded-full border px-4 py-2 text-xs font-bold transition"
                 style={
                   isActive
@@ -539,13 +443,17 @@ const BestPriceBooks = () => {
               color: PALETTE.ink,
             }}
           >
-            {loading ? "Đang tải..." : `${filteredBooks.length} cuốn phù hợp`}
+            {loading ? "Đang tải..." : `${totalCount} cuốn phù hợp`}
           </p>
 
           <div className="flex flex-wrap gap-2">
             <select
-              value={categoryFilter}
-              onChange={(event) => setCategoryFilter(event.target.value)}
+              value={filters.category || "all"}
+              onChange={(event) =>
+                setCategory(
+                  event.target.value === "all" ? "" : event.target.value,
+                )
+              }
               className="rounded-xl border bg-white px-3 py-2 text-xs font-bold outline-none"
               style={{
                 borderColor: PALETTE.line,
@@ -554,7 +462,7 @@ const BestPriceBooks = () => {
             >
               <option value="all">Tất cả danh mục</option>
 
-              {categories.map((category) => (
+              {BOOK_CATEGORIES.map((category) => (
                 <option key={category} value={category}>
                   {category}
                 </option>
@@ -562,8 +470,12 @@ const BestPriceBooks = () => {
             </select>
 
             <select
-              value={conditionFilter}
-              onChange={(event) => setConditionFilter(event.target.value)}
+              value={filters.condition || "all"}
+              onChange={(event) =>
+                setCondition(
+                  event.target.value === "all" ? "" : event.target.value,
+                )
+              }
               className="rounded-xl border bg-white px-3 py-2 text-xs font-bold outline-none"
               style={{
                 borderColor: PALETTE.line,
@@ -578,8 +490,8 @@ const BestPriceBooks = () => {
             </select>
 
             <select
-              value={sortOption}
-              onChange={(event) => setSortOption(event.target.value)}
+              value={filters.sort}
+              onChange={(event) => setSort(event.target.value)}
               className="rounded-xl border bg-white px-3 py-2 text-xs font-bold outline-none"
               style={{
                 borderColor: PALETTE.line,
@@ -672,7 +584,7 @@ const BestPriceBooks = () => {
 
             <button
               type="button"
-              onClick={fetchBooks}
+              onClick={reload}
               className="mt-5 inline-block rounded-xl px-5 py-2.5 text-sm font-extrabold text-white transition hover:brightness-110"
               style={{
                 backgroundColor: PALETTE.primary,
@@ -684,10 +596,10 @@ const BestPriceBooks = () => {
         )}
 
         {/* DANH SÁCH SÁCH */}
-        {!loading && !error && displayedBooks.length > 0 && (
+        {!loading && !error && visibleBooks.length > 0 && (
           <>
             <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-              {displayedBooks.map((book) => (
+              {visibleBooks.map((book) => (
                 <BookCard key={book._id} book={book} />
               ))}
             </div>
@@ -696,70 +608,66 @@ const BestPriceBooks = () => {
               <div className="mt-8 flex justify-center">
                 <button
                   type="button"
-                  onClick={() =>
-                    setVisibleCount((current) => current + PAGE_SIZE)
-                  }
-                  className="rounded-xl border-2 px-6 py-2.5 text-sm font-extrabold transition hover:brightness-95"
+                  disabled={loadingMore}
+                  onClick={loadMore}
+                  className="rounded-xl border-2 px-6 py-2.5 text-sm font-extrabold transition hover:brightness-95 disabled:opacity-50"
                   style={{
                     borderColor: PALETTE.primary,
                     color: PALETTE.primary,
                     backgroundColor: PALETTE.white,
                   }}
                 >
-                  Xem thêm sách
+                  {loadingMore ? "Đang tải..." : "Xem thêm sách"}
                 </button>
               </div>
             )}
           </>
         )}
 
-        {/* KHÔNG TÌM THẤY KẾT QUẢ SAU KHI LỌC (vẫn còn sách giá tốt gốc) */}
-        {!loading &&
-          !error &&
-          bestPriceBooks.length > 0 &&
-          filteredBooks.length === 0 && (
-            <div
-              className="mt-6 rounded-2xl border bg-white p-12 text-center shadow-sm"
+        {/* KHÔNG TÌM THẤY KẾT QUẢ SAU KHI LỌC (vẫn còn sách giá tốt trong catalog) */}
+        {!loading && !error && totalCount > 0 && visibleBooks.length === 0 && (
+          <div
+            className="mt-6 rounded-2xl border bg-white p-12 text-center shadow-sm"
+            style={{
+              borderColor: PALETTE.line,
+            }}
+          >
+            <div className="text-6xl">🔎</div>
+
+            <h3
+              className="mt-4 text-xl font-bold"
               style={{
-                borderColor: PALETTE.line,
+                color: PALETTE.ink,
+                fontFamily: FONT_SERIF,
               }}
             >
-              <div className="text-6xl">🔎</div>
+              Không tìm thấy sách phù hợp
+            </h3>
 
-              <h3
-                className="mt-4 text-xl font-bold"
-                style={{
-                  color: PALETTE.ink,
-                  fontFamily: FONT_SERIF,
-                }}
-              >
-                Không tìm thấy sách phù hợp
-              </h3>
+            <p
+              className="mt-2 text-sm"
+              style={{
+                color: PALETTE.muted,
+              }}
+            >
+              Thử thay đổi mức giá, danh mục hoặc từ khóa tìm kiếm.
+            </p>
 
-              <p
-                className="mt-2 text-sm"
-                style={{
-                  color: PALETTE.muted,
-                }}
-              >
-                Thử thay đổi mức giá, danh mục hoặc từ khóa tìm kiếm.
-              </p>
-
-              <button
-                type="button"
-                onClick={handleClearFilters}
-                className="mt-5 inline-block rounded-xl px-5 py-2.5 text-sm font-extrabold text-white transition hover:brightness-110"
-                style={{
-                  backgroundColor: PALETTE.primary,
-                }}
-              >
-                Xóa bộ lọc
-              </button>
-            </div>
-          )}
+            <button
+              type="button"
+              onClick={handleClearFilters}
+              className="mt-5 inline-block rounded-xl px-5 py-2.5 text-sm font-extrabold text-white transition hover:brightness-110"
+              style={{
+                backgroundColor: PALETTE.primary,
+              }}
+            >
+              Xóa bộ lọc
+            </button>
+          </div>
+        )}
 
         {/* KHÔNG CÓ SÁCH GIÁ TỐT NÀO TRONG HỆ THỐNG */}
-        {!loading && !error && bestPriceBooks.length === 0 && (
+        {!loading && !error && totalCount === 0 && (
           <div
             className="mt-6 rounded-2xl border bg-white p-12 text-center shadow-sm"
             style={{

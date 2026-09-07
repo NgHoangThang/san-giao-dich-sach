@@ -1,6 +1,7 @@
 const Review = require("../models/Review");
 const Order = require("../models/Order");
 const sendNotification = require("../utils/sendNotification");
+const respondServerError = require("../utils/respondServerError");
 
 // 1. Viết đánh giá cho người bán
 exports.createReview = async (req, res) => {
@@ -61,7 +62,7 @@ exports.createReview = async (req, res) => {
       .status(201)
       .json({ message: "Cảm ơn bạn đã để lại đánh giá!", review: newReview });
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -87,6 +88,6 @@ exports.getSellerReviews = async (req, res) => {
       reviews,
     });
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };

@@ -1,4 +1,5 @@
 const Shop = require("../models/Shop");
+const respondServerError = require("../utils/respondServerError");
 
 // ======================================================
 // 1. PUBLIC - LẤY THÔNG TIN SHOP
@@ -25,12 +26,7 @@ exports.getPublicShop = async (req, res) => {
       shop,
     });
   } catch (error) {
-    console.error("Lỗi getPublicShop:", error);
-
-    return res.status(500).json({
-      message: "Không thể lấy thông tin cửa hàng",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Không thể lấy thông tin cửa hàng");
   }
 };
 
@@ -50,12 +46,7 @@ exports.getAdminShop = async (req, res) => {
       shop,
     });
   } catch (error) {
-    console.error("Lỗi getAdminShop:", error);
-
-    return res.status(500).json({
-      message: "Không thể lấy thông tin cửa hàng",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Không thể lấy thông tin cửa hàng");
   }
 };
 
@@ -188,11 +179,6 @@ exports.saveShop = async (req, res) => {
       shop,
     });
   } catch (error) {
-    console.error("Lỗi saveShop:", error);
-
-    return res.status(500).json({
-      message: "Không thể lưu thông tin cửa hàng",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Không thể lưu thông tin cửa hàng");
   }
 };

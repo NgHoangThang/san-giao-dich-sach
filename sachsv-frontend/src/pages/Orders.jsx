@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import ReviewModal from "../components/ReviewModal";
+import { getPlaceholderImage } from "../utils/placeholderImage";
 
 const statusMap = {
   pending: {
@@ -162,6 +163,40 @@ const Orders = () => {
 
       alert(
         requestError.response?.data?.message || "Không thể duyệt đơn hàng.",
+      );
+    } finally {
+      setActionLoading("");
+    }
+  };
+
+  // ======================================================
+  // ADMIN XÁC NHẬN ĐÃ NHẬN THANH TOÁN QR
+  // ======================================================
+  const handleConfirmPayment = async (orderId) => {
+    const confirmed = window.confirm(
+      "Xác nhận bạn đã kiểm tra tài khoản ngân hàng và nhận được tiền cho đơn này?",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setActionLoading(`confirm-payment-${orderId}`);
+
+      const response = await api.patch(
+        `/api/orders/${orderId}/confirm-payment`,
+      );
+
+      alert(response.data.message || "Đã xác nhận thanh toán.");
+
+      await loadOrders();
+    } catch (requestError) {
+      console.error("Lỗi xác nhận thanh toán:", requestError);
+
+      alert(
+        requestError.response?.data?.message ||
+          "Không thể xác nhận thanh toán.",
       );
     } finally {
       setActionLoading("");
@@ -515,11 +550,25 @@ const Orders = () => {
     );
   };
 
-  const getBookImage = (order) => {
-    return (
-      order.bookId?.images?.[0] ||
-      "https://via.placeholder.com/120x160?text=Sach"
-    );
+  // ĐÃ SỬA: Order giờ chứa nhiều sách qua items[] thay vì 1 bookId
+  // duy nhất. getBookImage nhận thẳng book đã populate của từng item.
+  const getBookImage = (book) => {
+    return book?.images?.[0] || getPlaceholderImage(120, 160, "Sách");
+  };
+
+  // Tóm tắt tên đơn hàng — dùng cho tiêu đề popup (timeline/vận chuyển)
+  const summarizeOrderTitle = (order) => {
+    const items = order?.items || [];
+
+    if (items.length === 0) {
+      return "Đơn hàng";
+    }
+
+    if (items.length === 1) {
+      return items[0].title || "Sách không còn tồn tại";
+    }
+
+    return `${items.length} loại sách`;
   };
 
   if (loading) {
@@ -612,6 +661,9 @@ const Orders = () => {
 
                   const preparing = actionLoading === `prepare-${order._id}`;
 
+                  const confirmingPayment =
+                    actionLoading === `confirm-payment-${order._id}`;
+
                   const shipping =
                     actionLoading === `ship-${order._id}` ||
                     actionLoading === `shipping-update-${order._id}`;
@@ -624,9 +676,17 @@ const Orders = () => {
                     accepting ||
                     cancelling ||
                     preparing ||
+                    confirmingPayment ||
                     shipping ||
                     delivering ||
                     completing;
+
+                  // Đơn đã duyệt nhưng chưa thanh toán — "!== paid" để
+                  // đơn cũ (không có field paymentStatus) cũng coi là
+                  // chưa thanh toán.
+                  const awaitingPayment =
+                    order.status === "confirmed" &&
+                    order.paymentStatus !== "paid";
 
                   return (
                     <div
@@ -634,45 +694,55 @@ const Orders = () => {
                       className="border border-gray-200 rounded-xl p-4"
                     >
                       <div className="flex flex-col md:flex-row gap-4">
-                        <img
-                          src={getBookImage(order)}
-                          alt={order.bookId?.title || "Sách"}
-                          className="w-24 h-32 object-cover rounded-lg border border-gray-200"
-                        />
-
                         <div className="flex-1">
                           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                            <div>
-                              <h2 className="text-lg font-semibold text-gray-900">
-                                {order.bookId?.title ||
-                                  "Sách không còn tồn tại"}
-                              </h2>
+                            {/* ĐÃ SỬA: 1 đơn giờ có thể chứa nhiều sách
+                                (items[]) thay vì 1 sách duy nhất — hiển
+                                thị danh sách thay vì 1 ảnh/tên/giá đơn. */}
+                            <div className="flex-1 space-y-3">
+                              {(order.items || []).map((item, index) => {
+                                const book = item.bookId;
 
-                              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-                                <p className="text-gray-600">
-                                  Đơn giá:{" "}
-                                  <span className="font-semibold text-gray-800">
-                                    {Number(order.price || 0).toLocaleString(
-                                      "vi-VN",
-                                    )}{" "}
-                                    đ
-                                  </span>
-                                </p>
+                                return (
+                                  <div
+                                    key={
+                                      book?._id ||
+                                      `${order._id}-item-${index}`
+                                    }
+                                    className="flex gap-3"
+                                  >
+                                    <img
+                                      src={getBookImage(book)}
+                                      alt={item.title || "Sách"}
+                                      className="w-16 h-20 object-cover rounded-lg border border-gray-200 shrink-0"
+                                    />
 
-                                <p className="text-gray-600">
-                                  Số lượng:{" "}
-                                  <span className="font-semibold text-gray-800">
-                                    {order.quantity || 1}
-                                  </span>
-                                </p>
-                              </div>
+                                    <div className="min-w-0">
+                                      <h2 className="text-base font-semibold text-gray-900 line-clamp-2">
+                                        {item.title ||
+                                          "Sách không còn tồn tại"}
+                                      </h2>
 
-                              <p className="text-[#C92127] font-bold mt-1">
+                                      <p className="mt-1 text-sm text-gray-600">
+                                        Đơn giá:{" "}
+                                        <span className="font-semibold text-gray-800">
+                                          {Number(
+                                            item.price || 0,
+                                          ).toLocaleString("vi-VN")}{" "}
+                                          đ
+                                        </span>{" "}
+                                        × {item.quantity || 1}
+                                      </p>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+
+                              <p className="text-[#C92127] font-bold">
                                 Tổng:{" "}
-                                {Number(
-                                  order.totalPrice ||
-                                    (order.price || 0) * (order.quantity || 1),
-                                ).toLocaleString("vi-VN")}{" "}
+                                {Number(order.totalPrice || 0).toLocaleString(
+                                  "vi-VN",
+                                )}{" "}
                                 đ
                               </p>
                             </div>
@@ -807,8 +877,79 @@ const Orders = () => {
                             </div>
                           )}
 
-                          {/* ADMIN - ĐƠN ĐÃ XÁC NHẬN */}
+                          {/* NGƯỜI MUA - ĐƠN ĐÃ DUYỆT, CẦN THANH TOÁN QR */}
+                          {awaitingPayment && activeTab === "buy" && (
+                            <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                              <p className="font-semibold text-blue-800">
+                                💳 Vui lòng thanh toán
+                              </p>
+
+                              {order.paymentQrUrl && (
+                                <img
+                                  src={order.paymentQrUrl}
+                                  alt="QR chuyển khoản"
+                                  className="mt-3 w-48 rounded-lg border border-blue-200 bg-white"
+                                />
+                              )}
+
+                              <p className="mt-3 text-sm text-gray-700">
+                                Số tiền:{" "}
+                                <span className="font-semibold">
+                                  {Number(order.totalPrice || 0).toLocaleString(
+                                    "vi-VN",
+                                  )}{" "}
+                                  đ
+                                </span>
+                              </p>
+
+                              {order.paymentContent && (
+                                <p className="text-sm text-gray-700">
+                                  Nội dung chuyển khoản:{" "}
+                                  <span className="font-semibold">
+                                    {order.paymentContent}
+                                  </span>
+                                </p>
+                              )}
+
+                              <p className="mt-2 text-xs text-gray-500">
+                                Admin sẽ xác nhận sau khi nhận được tiền, vui
+                                lòng không đổi nội dung chuyển khoản.
+                              </p>
+                            </div>
+                          )}
+
+                          {/* NGƯỜI MUA - ĐÃ THANH TOÁN, CHỜ CHUẨN BỊ */}
                           {order.status === "confirmed" &&
+                            !awaitingPayment &&
+                            activeTab === "buy" && (
+                              <div className="mt-4 text-sm font-medium text-green-700">
+                                ✅ Đã thanh toán — đang chờ chuẩn bị hàng.
+                              </div>
+                            )}
+
+                          {/* ADMIN - ĐƠN ĐÃ XÁC NHẬN, CHỜ THANH TOÁN */}
+                          {awaitingPayment && activeTab === "sell" && (
+                            <div className="mt-4 flex flex-wrap items-center gap-3">
+                              <span className="text-sm font-medium text-orange-600">
+                                ⏳ Đang chờ khách thanh toán
+                              </span>
+
+                              <button
+                                type="button"
+                                disabled={processing}
+                                onClick={() => handleConfirmPayment(order._id)}
+                                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {confirmingPayment
+                                  ? "Đang xử lý..."
+                                  : "✅ Xác nhận đã nhận tiền"}
+                              </button>
+                            </div>
+                          )}
+
+                          {/* ADMIN - ĐÃ THANH TOÁN, CHỜ CHUẨN BỊ HÀNG */}
+                          {order.status === "confirmed" &&
+                            !awaitingPayment &&
                             activeTab === "sell" && (
                               <div className="mt-4">
                                 <button
@@ -999,7 +1140,7 @@ const Orders = () => {
                 </p>
 
                 <h2 className="mt-1 text-xl font-bold text-gray-900">
-                  {selectedTrackingOrder?.bookId?.title || "Đơn hàng"}
+                  {summarizeOrderTitle(selectedTrackingOrder)}
                 </h2>
 
                 <p className="mt-1 text-xs text-gray-500">
@@ -1178,7 +1319,7 @@ const Orders = () => {
                 </p>
 
                 <h2 className="mt-1 text-xl font-bold text-gray-900">
-                  {selectedShippingOrder?.bookId?.title || "Đơn hàng"}
+                  {summarizeOrderTitle(selectedShippingOrder)}
                 </h2>
               </div>
 

@@ -36,6 +36,46 @@ const statusHistorySchema = new mongoose.Schema(
 );
 
 // ======================================================
+// TỪNG SÁCH TRONG ĐƠN HÀNG
+// ------------------------------------------------------
+// ĐÃ SỬA: trước đây Order chỉ chứa đúng 1 bookId/price/quantity
+// (1 đơn = 1 sách). Giờ đổi sang items[] để 1 đơn có thể chứa nhiều
+// sách khác nhau (đặt từ giỏ hàng). "title"/"price" là snapshot tại
+// thời điểm đặt — không đọc lại từ Book, để đơn cũ không đổi theo
+// nếu sau này admin sửa tên/giá sách hoặc xóa hẳn sách đó.
+// ======================================================
+const orderItemSchema = new mongoose.Schema(
+  {
+    bookId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Book",
+      required: true,
+    },
+
+    title: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    price: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    quantity: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+  },
+  {
+    _id: false,
+  },
+);
+
+// ======================================================
 // THÔNG TIN ĐỊA CHỈ GIAO HÀNG
 // ======================================================
 const shippingAddressSchema = new mongoose.Schema(
@@ -118,35 +158,20 @@ const orderSchema = new mongoose.Schema(
     },
 
     // ==================================================
-    // SÁCH ĐƯỢC MUA
+    // CÁC SÁCH ĐƯỢC MUA TRONG ĐƠN NÀY (1 đơn có thể nhiều sách)
     // ==================================================
-    bookId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Book",
+    items: {
+      type: [orderItemSchema],
       required: true,
+      validate: {
+        validator: (items) => Array.isArray(items) && items.length > 0,
+        message: "Đơn hàng phải có ít nhất 1 sách",
+      },
     },
 
     // ==================================================
-    // GIÁ TẠI THỜI ĐIỂM ĐẶT (giá 1 cuốn)
-    // ==================================================
-    price: {
-      type: Number,
-      required: true,
-      min: 0,
-    },
-
-    // ==================================================
-    // SỐ LƯỢNG ĐẶT MUA
-    // ==================================================
-    quantity: {
-      type: Number,
-      required: true,
-      min: 1,
-      default: 1,
-    },
-
-    // ==================================================
-    // TỔNG TIỀN = price * quantity (lưu sẵn để tránh tính lại)
+    // TỔNG TIỀN = tổng (price * quantity) của mọi item
+    // (lưu sẵn để tránh tính lại)
     // ==================================================
     totalPrice: {
       type: Number,
@@ -179,6 +204,27 @@ const orderSchema = new mongoose.Schema(
         "cancelled", // Đã hủy
       ],
       default: "pending",
+    },
+
+    // ==================================================
+    // THANH TOÁN
+    // ------------------------------------------------------
+    // ĐÃ THÊM: bắt buộc thanh toán qua QR chuyển khoản ngân hàng
+    // trước khi Admin được chuyển đơn sang "preparing" — dùng
+    // "!== paid" thay vì "=== unpaid" khi kiểm tra ở mọi nơi, để
+    // các đơn cũ tạo trước khi có field này (không có paymentStatus
+    // trong DB) vẫn tự động bị coi là chưa thanh toán, không cần
+    // migrate script backfill.
+    // ==================================================
+    paymentStatus: {
+      type: String,
+      enum: ["unpaid", "paid"],
+      default: "unpaid",
+    },
+
+    paymentConfirmedAt: {
+      type: Date,
+      default: null,
     },
 
     // ==================================================

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import api from "../services/api";
+import { getPlaceholderImage } from "../utils/placeholderImage";
 
 const MyBooks = () => {
   const [books, setBooks] = useState([]);
@@ -78,7 +79,7 @@ const MyBooks = () => {
                       src={
                         book.images && book.images[0]
                           ? book.images[0]
-                          : "https://via.placeholder.com/50"
+                          : getPlaceholderImage(50, 50, "Sách")
                       }
                       alt={book.title}
                       className="w-12 h-16 object-cover rounded border"

@@ -9,6 +9,7 @@ const {
   validateBookUpdate,
 } = require("../middleware/validateBook");
 const upload = require("../middleware/upload");
+const validateObjectId = require("../middleware/validateObjectId");
 
 // ==========================================
 // ROUTE CẦN ĐĂNG NHẬP (Yêu cầu có Token)
@@ -32,22 +33,47 @@ router.put(
   "/:id",
   authMiddleware,
   isAdmin, // Chỉ Admin được sửa
+  validateObjectId("id"),
   upload.array("images", 10), // ĐÃ THÊM: nhận ảnh mới khi sửa sách
   validateBookUpdate,
   bookController.updateBook,
 );
 
 // Xóa sách theo ID (Chỉ Admin)
-router.delete("/:id", authMiddleware, isAdmin, bookController.deleteBook); // Chỉ Admin được xóa
+router.delete(
+  "/:id",
+  authMiddleware,
+  isAdmin,
+  validateObjectId("id"),
+  bookController.deleteBook,
+); // Chỉ Admin được xóa
 
 // Đánh dấu sách đã bán (Chỉ Admin)
-router.patch("/:id/sold", authMiddleware, isAdmin, bookController.markAsSold);
+router.patch(
+  "/:id/sold",
+  authMiddleware,
+  isAdmin,
+  validateObjectId("id"),
+  bookController.markAsSold,
+);
 
 // Ẩn sách (Chỉ Admin)
-router.patch("/:id/hide", authMiddleware, isAdmin, bookController.hideBook);
+router.patch(
+  "/:id/hide",
+  authMiddleware,
+  isAdmin,
+  validateObjectId("id"),
+  bookController.hideBook,
+);
 
 // Hiện sách lại (Chỉ Admin)
-router.patch("/:id/show", authMiddleware, isAdmin, bookController.showBook);
+router.patch(
+  "/:id/show",
+  authMiddleware,
+  isAdmin,
+  validateObjectId("id"),
+  bookController.showBook,
+);
 
 // ==========================================
 // ROUTE CÔNG KHAI (Không cần Token)
@@ -57,9 +83,13 @@ router.patch("/:id/show", authMiddleware, isAdmin, bookController.showBook);
 router.get("/", bookController.getAllBooks);
 
 // Xem sách của một người bán cụ thể
-router.get("/seller/:sellerId", bookController.getBooksBySeller);
+router.get(
+  "/seller/:sellerId",
+  validateObjectId("sellerId"),
+  bookController.getBooksBySeller,
+);
 
 // Xem chi tiết 1 sách theo ID
-router.get("/:id", bookController.getBookById);
+router.get("/:id", validateObjectId("id"), bookController.getBookById);
 
 module.exports = router;

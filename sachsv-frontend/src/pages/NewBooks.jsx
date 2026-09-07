@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import api from "../services/api";
 import BookCard from "../components/BookCard";
+import { useBookCatalog } from "../hooks/useBookCatalog";
+import { BOOK_CATEGORIES } from "../constants/bookCategories";
 
 // ======================================================
 // BẢNG MÀU THEO THƯƠNG HIỆU SÁCH SV (đồng bộ với BookCard)
@@ -51,6 +53,9 @@ const isSameCalendarDay = (date, reference) =>
   date.getMonth() === reference.getMonth() &&
   date.getDate() === reference.getDate();
 
+// ĐÃ SỬA: khớp đúng key với tham số "recency" mới hỗ trợ ở backend
+// (bookController.getAllBooks) — "all" là sentinel riêng của trang,
+// dịch sang "" (không lọc) khi gọi setRecency.
 const TIME_RANGES = [
   { key: "all", label: "Tất cả" },
   { key: "today", label: "Hôm nay" },
@@ -74,217 +79,99 @@ const SORT_OPTIONS = [
   { key: "title", label: "Tên A–Z" },
 ];
 
-const PAGE_SIZE = 10;
-
 const NewBooks = () => {
-  const [books, setBooks] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const {
+    books,
+    loading,
+    loadingMore,
+    error,
+    totalCount,
+    hasMore,
+    filters,
+    setSearch,
+    setCategory,
+    setCondition,
+    setSort,
+    setRecency,
+    resetFilters: resetCatalogFilters,
+    loadMore,
+    reload,
+  } = useBookCatalog({ initialFilters: { sort: "newest" } });
 
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
+  // ĐÃ THÊM: khối "Mới hôm nay" là 1 fetch nhỏ riêng (top 5, cố định
+  // recency=today), không đi qua hook chính vì không có UI chỉnh sửa.
+  const [todaySpotlightBooks, setTodaySpotlightBooks] = useState([]);
 
-  const [timeFilter, setTimeFilter] = useState("all");
-  const [categoryFilter, setCategoryFilter] = useState("all");
-  const [conditionFilter, setConditionFilter] = useState("all");
-  const [sortOption, setSortOption] = useState("newest");
+  // ĐÃ THÊM: mẫu 50 sách mới nhất (trần tối đa hiện có) chỉ để tính
+  // số liệu trang trí (đăng hôm nay/7 ngày/số danh mục có sách mới)
+  // — số liệu xấp xỉ, không phải tổng chính xác toàn catalog, không
+  // phụ thuộc bộ lọc trên thanh công cụ.
+  const [statsSample, setStatsSample] = useState([]);
 
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  useEffect(() => {
+    let cancelled = false;
 
-  const fetchBooks = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError("");
+    api
+      .get("/api/books", { params: { sort: "newest", recency: "today", limit: 5 } })
+      .then((response) => {
+        if (!cancelled) {
+          setTodaySpotlightBooks(response.data?.books || []);
+        }
+      })
+      .catch((requestError) => {
+        console.error("Lỗi tải sách mới hôm nay:", requestError);
+      });
 
-      const response = await api.get("/api/books");
+    api
+      .get("/api/books", { params: { sort: "newest", limit: 50 } })
+      .then((response) => {
+        if (!cancelled) {
+          setStatsSample(response.data?.books || []);
+        }
+      })
+      .catch((requestError) => {
+        console.error("Lỗi tải mẫu thống kê sách mới:", requestError);
+      });
 
-      const responseBooks = Array.isArray(response.data)
-        ? response.data
-        : response.data?.books || response.data?.data || [];
-
-      setBooks(Array.isArray(responseBooks) ? responseBooks : []);
-    } catch (requestError) {
-      console.error("Lỗi tải sách mới đăng:", requestError);
-
-      setError(
-        requestError.response?.data?.message ||
-          "Không thể kết nối đến máy chủ. Vui lòng thử lại sau.",
-      );
-    } finally {
-      setLoading(false);
-    }
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  useEffect(() => {
-    fetchBooks();
-  }, [fetchBooks]);
-
-  // Debounce ô tìm kiếm (350ms)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setSearch(searchInput.trim().toLowerCase());
-    }, 350);
-
-    return () => clearTimeout(timer);
-  }, [searchInput]);
-
-  // Sách còn hàng + có ngày đăng, mới nhất trước (logic gốc, không đổi)
-  const newestBooks = useMemo(() => {
-    return [...books]
-      .filter((book) => book.createdAt && book.status !== "sold")
-      .sort(
-        (firstBook, secondBook) =>
-          new Date(secondBook.createdAt) - new Date(firstBook.createdAt),
-      );
-  }, [books]);
-
-  // Danh mục lấy từ dữ liệu thật, không hard-code
-  const categories = useMemo(() => {
-    const unique = new Set(
-      newestBooks
-        .map((book) => book.category)
-        .filter((category) => typeof category === "string" && category.trim()),
-    );
-
-    return Array.from(unique).sort((a, b) => a.localeCompare(b, "vi"));
-  }, [newestBooks]);
-
-  // Thống kê nhanh tính từ dữ liệu thật
   const stats = useMemo(() => {
     const now = new Date();
 
-    const total = newestBooks.length;
-
-    const todayCount = newestBooks.filter((book) =>
-      isSameCalendarDay(new Date(book.createdAt), now),
+    const todayCount = statsSample.filter(
+      (book) => book.createdAt && isSameCalendarDay(new Date(book.createdAt), now),
     ).length;
 
-    const last7DaysCount = newestBooks.filter(
-      (book) => now - new Date(book.createdAt) <= 7 * DAY_MS,
+    const last7DaysCount = statsSample.filter(
+      (book) => book.createdAt && now - new Date(book.createdAt) <= 7 * DAY_MS,
     ).length;
 
-    return {
-      total,
-      todayCount,
-      last7DaysCount,
-      categoryCount: categories.length,
-    };
-  }, [newestBooks, categories.length]);
+    const categoryCount = new Set(
+      statsSample.map((book) => book.category).filter(Boolean),
+    ).size;
 
-  // Sách đăng trong hôm nay để làm section nổi bật đầu trang (tối đa 5 cuốn)
-  const todaySpotlightBooks = useMemo(() => {
-    const now = new Date();
+    return { todayCount, last7DaysCount, categoryCount };
+  }, [statsSample]);
 
-    return newestBooks
-      .filter((book) => isSameCalendarDay(new Date(book.createdAt), now))
-      .slice(0, 5);
-  }, [newestBooks]);
-
-  // Áp dụng filter + search + sort trên frontend
-  const filteredBooks = useMemo(() => {
-    let result = [...newestBooks];
-    const now = new Date();
-
-    if (timeFilter !== "all") {
-      result = result.filter((book) => {
-        const createdAt = new Date(book.createdAt);
-        const diff = now - createdAt;
-
-        switch (timeFilter) {
-          case "today":
-            return isSameCalendarDay(createdAt, now);
-          case "3days":
-            return diff <= 3 * DAY_MS;
-          case "7days":
-            return diff <= 7 * DAY_MS;
-          case "30days":
-            return diff <= 30 * DAY_MS;
-          default:
-            return true;
-        }
-      });
-    }
-
-    if (categoryFilter !== "all") {
-      result = result.filter((book) => book.category === categoryFilter);
-    }
-
-    if (conditionFilter !== "all") {
-      result = result.filter((book) => book.condition === conditionFilter);
-    }
-
-    if (search) {
-      result = result.filter((book) => {
-        const title = (book.title || "").toLowerCase();
-        const author = (book.author || "").toLowerCase();
-        const category = (book.category || "").toLowerCase();
-
-        return (
-          title.includes(search) ||
-          author.includes(search) ||
-          category.includes(search)
-        );
-      });
-    }
-
-    switch (sortOption) {
-      case "oldest":
-        result.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-        break;
-      case "price-low":
-        result.sort((a, b) => Number(a.price) - Number(b.price));
-        break;
-      case "price-high":
-        result.sort((a, b) => Number(b.price) - Number(a.price));
-        break;
-      case "title":
-        result.sort((a, b) =>
-          (a.title || "").localeCompare(b.title || "", "vi"),
-        );
-        break;
-      case "newest":
-      default:
-        result.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        break;
-    }
-
-    return result;
-  }, [
-    newestBooks,
-    timeFilter,
-    categoryFilter,
-    conditionFilter,
-    search,
-    sortOption,
-  ]);
-
-  // Reset phân trang mỗi khi filter/search/sort thay đổi
-  useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-  }, [timeFilter, categoryFilter, conditionFilter, search, sortOption]);
-
-  const displayedBooks = filteredBooks.slice(0, visibleCount);
-  const hasMore = visibleCount < filteredBooks.length;
+  const timeFilterKey = filters.recency || "all";
 
   const hasActiveFilters =
-    search !== "" ||
-    timeFilter !== "all" ||
-    categoryFilter !== "all" ||
-    conditionFilter !== "all" ||
-    sortOption !== "newest";
+    filters.search.trim() !== "" ||
+    timeFilterKey !== "all" ||
+    filters.category !== "" ||
+    filters.condition !== "" ||
+    filters.sort !== "newest";
 
   const handleClearFilters = () => {
-    setSearchInput("");
-    setSearch("");
-    setTimeFilter("all");
-    setCategoryFilter("all");
-    setConditionFilter("all");
-    setSortOption("newest");
+    resetCatalogFilters();
   };
 
   // Ảnh sách thật mới nhất để trang trí banner (chỉ khi dữ liệu có images)
   const decorativeImages = useMemo(() => {
-    return newestBooks
+    return books
       .filter((book) => book?.images?.[0])
       .slice(0, 3)
       .map((book) => ({
@@ -292,7 +179,7 @@ const NewBooks = () => {
         title: book.title,
         url: resolveImageUrl(book.images[0]),
       }));
-  }, [newestBooks]);
+  }, [books]);
 
   return (
     <div
@@ -433,7 +320,7 @@ const NewBooks = () => {
             {[
               {
                 label: "Tổng sách mới",
-                value: stats.total > 0 ? `${stats.total}` : "—",
+                value: totalCount > 0 ? `${totalCount}` : "—",
               },
               {
                 label: "Đăng hôm nay",
@@ -534,8 +421,8 @@ const NewBooks = () => {
 
             <input
               type="text"
-              value={searchInput}
-              onChange={(event) => setSearchInput(event.target.value)}
+              value={filters.search}
+              onChange={(event) => setSearch(event.target.value)}
               placeholder="Tìm sách mới theo tên, tác giả hoặc danh mục..."
               className="w-full bg-transparent text-sm outline-none"
               style={{
@@ -543,10 +430,10 @@ const NewBooks = () => {
               }}
             />
 
-            {searchInput && (
+            {filters.search && (
               <button
                 type="button"
-                onClick={() => setSearchInput("")}
+                onClick={() => setSearch("")}
                 aria-label="Xóa từ khóa"
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white"
                 style={{
@@ -562,13 +449,15 @@ const NewBooks = () => {
         {/* BỘ LỌC THEO THỜI GIAN */}
         <div className="mt-4 flex flex-wrap gap-2">
           {TIME_RANGES.map((range) => {
-            const isActive = timeFilter === range.key;
+            const isActive = timeFilterKey === range.key;
 
             return (
               <button
                 key={range.key}
                 type="button"
-                onClick={() => setTimeFilter(range.key)}
+                onClick={() =>
+                  setRecency(range.key === "all" ? "" : range.key)
+                }
                 className="rounded-full border px-4 py-2 text-xs font-bold transition"
                 style={
                   isActive
@@ -598,13 +487,17 @@ const NewBooks = () => {
               color: PALETTE.ink,
             }}
           >
-            {loading ? "Đang tải..." : `${filteredBooks.length} cuốn phù hợp`}
+            {loading ? "Đang tải..." : `${totalCount} cuốn phù hợp`}
           </p>
 
           <div className="flex flex-wrap gap-2">
             <select
-              value={categoryFilter}
-              onChange={(event) => setCategoryFilter(event.target.value)}
+              value={filters.category || "all"}
+              onChange={(event) =>
+                setCategory(
+                  event.target.value === "all" ? "" : event.target.value,
+                )
+              }
               className="rounded-xl border bg-white px-3 py-2 text-xs font-bold outline-none"
               style={{
                 borderColor: PALETTE.line,
@@ -613,7 +506,7 @@ const NewBooks = () => {
             >
               <option value="all">Tất cả danh mục</option>
 
-              {categories.map((category) => (
+              {BOOK_CATEGORIES.map((category) => (
                 <option key={category} value={category}>
                   {category}
                 </option>
@@ -621,8 +514,12 @@ const NewBooks = () => {
             </select>
 
             <select
-              value={conditionFilter}
-              onChange={(event) => setConditionFilter(event.target.value)}
+              value={filters.condition || "all"}
+              onChange={(event) =>
+                setCondition(
+                  event.target.value === "all" ? "" : event.target.value,
+                )
+              }
               className="rounded-xl border bg-white px-3 py-2 text-xs font-bold outline-none"
               style={{
                 borderColor: PALETTE.line,
@@ -637,8 +534,8 @@ const NewBooks = () => {
             </select>
 
             <select
-              value={sortOption}
-              onChange={(event) => setSortOption(event.target.value)}
+              value={filters.sort}
+              onChange={(event) => setSort(event.target.value)}
               className="rounded-xl border bg-white px-3 py-2 text-xs font-bold outline-none"
               style={{
                 borderColor: PALETTE.line,
@@ -731,7 +628,7 @@ const NewBooks = () => {
 
             <button
               type="button"
-              onClick={fetchBooks}
+              onClick={reload}
               className="mt-5 inline-block rounded-xl px-5 py-2.5 text-sm font-extrabold text-white transition hover:brightness-110"
               style={{
                 backgroundColor: PALETTE.primary,
@@ -743,10 +640,10 @@ const NewBooks = () => {
         )}
 
         {/* DANH SÁCH SÁCH */}
-        {!loading && !error && displayedBooks.length > 0 && (
+        {!loading && !error && books.length > 0 && (
           <>
             <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-              {displayedBooks.map((book) => (
+              {books.map((book) => (
                 <BookCard key={book._id} book={book} />
               ))}
             </div>
@@ -755,83 +652,79 @@ const NewBooks = () => {
               <div className="mt-8 flex justify-center">
                 <button
                   type="button"
-                  onClick={() =>
-                    setVisibleCount((current) => current + PAGE_SIZE)
-                  }
-                  className="rounded-xl border-2 px-6 py-2.5 text-sm font-extrabold transition hover:brightness-95"
+                  disabled={loadingMore}
+                  onClick={loadMore}
+                  className="rounded-xl border-2 px-6 py-2.5 text-sm font-extrabold transition hover:brightness-95 disabled:opacity-50"
                   style={{
                     borderColor: PALETTE.primary,
                     color: PALETTE.primary,
                     backgroundColor: PALETTE.white,
                   }}
                 >
-                  Xem thêm sách mới
+                  {loadingMore ? "Đang tải..." : "Xem thêm sách mới"}
                 </button>
               </div>
             )}
           </>
         )}
 
-        {/* KHÔNG TÌM THẤY KẾT QUẢ SAU KHI LỌC (vẫn còn sách mới gốc) */}
-        {!loading &&
-          !error &&
-          newestBooks.length > 0 &&
-          filteredBooks.length === 0 && (
-            <div
-              className="mt-6 rounded-2xl border bg-white p-12 text-center shadow-sm"
+        {/* KHÔNG TÌM THẤY KẾT QUẢ SAU KHI LỌC */}
+        {!loading && !error && hasActiveFilters && totalCount === 0 && (
+          <div
+            className="mt-6 rounded-2xl border bg-white p-12 text-center shadow-sm"
+            style={{
+              borderColor: PALETTE.line,
+            }}
+          >
+            <div className="text-6xl">🔎</div>
+
+            <h3
+              className="mt-4 text-xl font-bold"
               style={{
-                borderColor: PALETTE.line,
+                color: PALETTE.ink,
+                fontFamily: FONT_SERIF,
               }}
             >
-              <div className="text-6xl">🔎</div>
+              Không tìm thấy sách mới phù hợp
+            </h3>
 
-              <h3
-                className="mt-4 text-xl font-bold"
+            <p
+              className="mt-2 text-sm"
+              style={{
+                color: PALETTE.muted,
+              }}
+            >
+              Thử thay đổi bộ lọc hoặc từ khóa tìm kiếm.
+            </p>
+
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                className="rounded-xl px-5 py-2.5 text-sm font-extrabold text-white transition hover:brightness-110"
                 style={{
-                  color: PALETTE.ink,
-                  fontFamily: FONT_SERIF,
+                  backgroundColor: PALETTE.primary,
                 }}
               >
-                Không tìm thấy sách mới phù hợp
-              </h3>
+                Xóa bộ lọc
+              </button>
 
-              <p
-                className="mt-2 text-sm"
+              <Link
+                to="/"
+                className="rounded-xl border-2 px-5 py-2.5 text-sm font-extrabold transition hover:brightness-95"
                 style={{
-                  color: PALETTE.muted,
+                  borderColor: PALETTE.primary,
+                  color: PALETTE.primary,
                 }}
               >
-                Thử thay đổi bộ lọc hoặc từ khóa tìm kiếm.
-              </p>
-
-              <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleClearFilters}
-                  className="rounded-xl px-5 py-2.5 text-sm font-extrabold text-white transition hover:brightness-110"
-                  style={{
-                    backgroundColor: PALETTE.primary,
-                  }}
-                >
-                  Xóa bộ lọc
-                </button>
-
-                <Link
-                  to="/"
-                  className="rounded-xl border-2 px-5 py-2.5 text-sm font-extrabold transition hover:brightness-95"
-                  style={{
-                    borderColor: PALETTE.primary,
-                    color: PALETTE.primary,
-                  }}
-                >
-                  Về trang chủ
-                </Link>
-              </div>
+                Về trang chủ
+              </Link>
             </div>
-          )}
+          </div>
+        )}
 
         {/* KHÔNG CÓ SÁCH MỚI NÀO TRONG HỆ THỐNG */}
-        {!loading && !error && newestBooks.length === 0 && (
+        {!loading && !error && !hasActiveFilters && totalCount === 0 && (
           <div
             className="mt-6 rounded-2xl border bg-white p-12 text-center shadow-sm"
             style={{

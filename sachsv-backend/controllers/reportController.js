@@ -1,4 +1,5 @@
 const Report = require("../models/Report");
+const respondServerError = require("../utils/respondServerError");
 
 // ======================================================
 // NGƯỜI DÙNG GỬI TỐ CÁO
@@ -45,12 +46,7 @@ exports.createReport = async (req, res) => {
       report: newReport,
     });
   } catch (error) {
-    console.error("Lỗi tạo tố cáo:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -65,11 +61,6 @@ exports.getAllReports = async (req, res) => {
 
     return res.status(200).json(reports);
   } catch (error) {
-    console.error("Lỗi lấy danh sách tố cáo:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server");
   }
 };

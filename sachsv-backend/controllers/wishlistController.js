@@ -1,4 +1,5 @@
 const Wishlist = require("../models/Wishlist");
+const respondServerError = require("../utils/respondServerError");
 
 // 1. Thêm vào wishlist
 exports.addToWishlist = async (req, res) => {
@@ -16,7 +17,7 @@ exports.addToWishlist = async (req, res) => {
     await Wishlist.create({ userId, bookId });
     res.status(201).json({ message: "Đã thêm vào yêu thích!" });
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -32,7 +33,7 @@ exports.getWishlist = async (req, res) => {
 
     res.status(200).json(wishlist);
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -45,6 +46,6 @@ exports.removeFromWishlist = async (req, res) => {
     });
     res.status(200).json({ message: "Đã xóa khỏi yêu thích!" });
   } catch (error) {
-    res.status(500).json({ message: "Lỗi server", error: error.message });
+    respondServerError(res, error, "Lỗi server");
   }
 };

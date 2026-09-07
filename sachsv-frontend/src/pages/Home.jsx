@@ -1,15 +1,11 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import api from "../services/api";
 import BookCard from "../components/BookCard";
 import { useAuth } from "../context/AuthContext";
+import { useBookCatalog } from "../hooks/useBookCatalog";
+import { BOOK_CATEGORIES } from "../constants/bookCategories";
 
 // ======================================================
 // BẢNG MÀU THEO THƯƠNG HIỆU SÁCH SV (đỏ nâu chủ đạo)
@@ -82,38 +78,18 @@ const normalizeText = (value) =>
     .trim()
     .toLowerCase();
 
-const getSellerId = (book) => {
-  const seller = book?.sellerId;
-
-  if (!seller) return "";
-
-  if (typeof seller === "object") {
-    return String(seller._id || seller.id || "");
-  }
-
-  return String(seller);
+// ĐÃ THÊM: quy đổi khoảng giá sang minPrice/maxPrice gửi lên backend
+// — chuẩn hóa về đúng 4 mức như AllBooks/BestPriceBooks (trước đây
+// trang này tự chia 3 mức khác, gây lệch kết quả "giá tốt" giữa các
+// trang).
+const PRICE_BUCKETS = {
+  "under-50": { max: 49999 },
+  "50-100": { min: 50000, max: 100000 },
+  "100-200": { min: 100001, max: 200000 },
+  "over-200": { min: 200001 },
 };
 
-const getSellerName = (book) => {
-  const seller = book?.sellerId;
-
-  if (seller && typeof seller === "object") {
-    return seller.fullName || seller.name || "";
-  }
-
-  return "";
-};
-
-const isBookNew = (book) => {
-  if (!book?.createdAt) return false;
-
-  const createdAt = new Date(book.createdAt);
-
-  if (Number.isNaN(createdAt.getTime())) return false;
-
-  const sevenDays = 7 * 24 * 60 * 60 * 1000;
-  return Date.now() - createdAt.getTime() <= sevenDays;
-};
+const CATEGORY_OPTIONS = ["All", ...BOOK_CATEGORIES];
 
 const Home = () => {
   const { user } = useAuth();
@@ -121,79 +97,120 @@ const Home = () => {
 
   const booksSectionRef = useRef(null);
 
-  const [books, setBooks] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const {
+    books,
+    loading,
+    loadingMore,
+    error,
+    totalCount,
+    hasMore,
+    filters,
+    setSearch,
+    setCategory,
+    setCondition,
+    setSort,
+    setPriceRange,
+    resetFilters: resetCatalogFilters,
+    loadMore,
+    reload,
+  } = useBookCatalog({
+    initialFilters: {
+      search: getStoredValue("sachsv-home-search", ""),
+      category: (() => {
+        const stored = getStoredValue("sachsv-home-category", "All");
+        return stored === "All" ? "" : stored;
+      })(),
+      sort: "newest",
+    },
+  });
 
-  const [searchTerm, setSearchTerm] = useState(() =>
-    getStoredValue("sachsv-home-search", ""),
-  );
-  const [debouncedSearch, setDebouncedSearch] = useState(searchTerm);
-  const [selectedCategory, setSelectedCategory] = useState(() =>
-    getStoredValue("sachsv-home-category", "All"),
-  );
-  const [selectedCondition, setSelectedCondition] = useState("All");
-  const [selectedPrice, setSelectedPrice] = useState("All");
-  const [sortOption, setSortOption] = useState("newest");
-  const [visibleCount, setVisibleCount] = useState(8);
+  const [selectedPriceKey, setSelectedPriceKey] = useState("All");
   const [searchFocused, setSearchFocused] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const [categoryMenuOpen, setCategoryMenuOpen] = useState(false);
 
-  const fetchBooks = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError("");
+  // ĐÃ THÊM: 3 khối "top 5" (mới đăng/giá tốt/giáo trình) + mẫu thống
+  // kê trang trí là các fetch nhỏ riêng, độc lập với bộ lọc catalog
+  // chính bên dưới — không đi qua useBookCatalog vì không có UI chỉnh
+  // sửa cho chúng.
+  const [newestBooks, setNewestBooks] = useState([]);
+  const [bestPriceBooks, setBestPriceBooks] = useState([]);
+  const [textbookBooks, setTextbookBooks] = useState([]);
+  const [statsSample, setStatsSample] = useState([]);
 
-      const response = await api.get("/api/books");
+  useEffect(() => {
+    let cancelled = false;
 
-      const responseBooks = Array.isArray(response.data)
-        ? response.data
-        : response.data?.books || response.data?.data || [];
-
-      setBooks(Array.isArray(responseBooks) ? responseBooks : []);
-    } catch (requestError) {
-      console.error("Lỗi tải danh sách sách:", requestError);
-
-      setError(
-        requestError.response?.data?.message ||
-          "Không thể kết nối đến máy chủ. Vui lòng thử lại sau.",
+    api
+      .get("/api/books", { params: { sort: "newest", limit: 5 } })
+      .then((response) => {
+        if (!cancelled) setNewestBooks(response.data?.books || []);
+      })
+      .catch((requestError) =>
+        console.error("Lỗi tải sách mới đăng:", requestError),
       );
-    } finally {
-      setLoading(false);
-    }
+
+    api
+      .get("/api/books", { params: { sort: "price-low", limit: 10 } })
+      .then((response) => {
+        if (!cancelled) {
+          const list = (response.data?.books || []).filter(
+            (book) => book.status !== "sold" && Number(book.price) > 0,
+          );
+
+          setBestPriceBooks(list.slice(0, 5));
+        }
+      })
+      .catch((requestError) =>
+        console.error("Lỗi tải sách giá tốt:", requestError),
+      );
+
+    api
+      .get("/api/books", {
+        params: {
+          category: "Giáo trình đại cương",
+          sort: "newest",
+          limit: 10,
+        },
+      })
+      .then((response) => {
+        if (!cancelled) {
+          const list = (response.data?.books || []).filter(
+            (book) => book.status !== "sold",
+          );
+
+          setTextbookBooks(list.slice(0, 5));
+        }
+      })
+      .catch((requestError) =>
+        console.error("Lỗi tải giáo trình nổi bật:", requestError),
+      );
+
+    api
+      .get("/api/books", { params: { sort: "newest", limit: 50 } })
+      .then((response) => {
+        if (!cancelled) setStatsSample(response.data?.books || []);
+      })
+      .catch((requestError) =>
+        console.error("Lỗi tải mẫu thống kê trang chủ:", requestError),
+      );
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    fetchBooks();
-  }, [fetchBooks]);
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setDebouncedSearch(searchTerm);
-    }, 350);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [searchTerm]);
-
-  useEffect(() => {
     try {
-      localStorage.setItem("sachsv-home-search", searchTerm);
-      localStorage.setItem("sachsv-home-category", selectedCategory);
+      localStorage.setItem("sachsv-home-search", filters.search);
+      localStorage.setItem(
+        "sachsv-home-category",
+        filters.category || "All",
+      );
     } catch {
       // Trình duyệt có thể chặn localStorage.
     }
-  }, [searchTerm, selectedCategory]);
-
-  useEffect(() => {
-    setVisibleCount(8);
-  }, [
-    debouncedSearch,
-    selectedCategory,
-    selectedCondition,
-    selectedPrice,
-    sortOption,
-  ]);
+  }, [filters.search, filters.category]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -207,197 +224,97 @@ const Home = () => {
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
-  const safeBooks = useMemo(() => (Array.isArray(books) ? books : []), [books]);
-
-  const categories = useMemo(() => {
-    const uniqueCategories = Array.from(
-      new Set(safeBooks.map((book) => book.category).filter(Boolean)),
-    );
-
-    return ["All", ...uniqueCategories];
-  }, [safeBooks]);
-
-  useEffect(() => {
-    if (selectedCategory !== "All" && !categories.includes(selectedCategory)) {
-      setSelectedCategory("All");
-    }
-  }, [categories, selectedCategory]);
-
+  // Số liệu trang trí — tính xấp xỉ trên mẫu 50 sách mới nhất (trần
+  // tối đa hiện có), độc lập với bộ lọc trên thanh tìm kiếm.
   const categoryCounts = useMemo(() => {
-    return safeBooks.reduce((result, book) => {
+    return statsSample.reduce((result, book) => {
       const category = book.category || "Khác";
       result[category] = (result[category] || 0) + 1;
       return result;
     }, {});
-  }, [safeBooks]);
+  }, [statsSample]);
 
-  const statistics = useMemo(() => {
-    const sellerIds = new Set(safeBooks.map(getSellerId).filter(Boolean));
-
-    const newBooks = safeBooks.filter(isBookNew).length;
-
-    return {
-      totalBooks: safeBooks.length,
-      totalCategories: Object.keys(categoryCounts).length,
-      totalSellers: sellerIds.size,
-      newBooks,
-    };
-  }, [safeBooks, categoryCounts]);
-
-  const filteredBooks = useMemo(() => {
-    const keyword = normalizeText(debouncedSearch);
-
-    const result = safeBooks.filter((book) => {
-      const searchableText = [
-        book.title,
-        book.author,
-        book.category,
-        getSellerName(book),
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      const matchesSearch = !keyword || searchableText.includes(keyword);
-
-      const matchesCategory =
-        selectedCategory === "All" || book.category === selectedCategory;
-
-      const matchesCondition =
-        selectedCondition === "All" || book.condition === selectedCondition;
-
-      const price = Number(book.price || 0);
-
-      const matchesPrice =
-        selectedPrice === "All" ||
-        (selectedPrice === "under-50" && price < 50000) ||
-        (selectedPrice === "50-100" && price >= 50000 && price <= 100000) ||
-        (selectedPrice === "over-100" && price > 100000);
-
-      return (
-        matchesSearch && matchesCategory && matchesCondition && matchesPrice
-      );
-    });
-
-    return [...result].sort((firstBook, secondBook) => {
-      if (sortOption === "price-low") {
-        return Number(firstBook.price || 0) - Number(secondBook.price || 0);
-      }
-
-      if (sortOption === "price-high") {
-        return Number(secondBook.price || 0) - Number(firstBook.price || 0);
-      }
-
-      if (sortOption === "title") {
-        return String(firstBook.title || "").localeCompare(
-          String(secondBook.title || ""),
-          "vi",
-        );
-      }
-
-      const firstDate = firstBook.createdAt
-        ? new Date(firstBook.createdAt).getTime()
-        : 0;
-
-      const secondDate = secondBook.createdAt
-        ? new Date(secondBook.createdAt).getTime()
-        : 0;
-
-      return secondDate - firstDate;
-    });
-  }, [
-    safeBooks,
-    debouncedSearch,
-    selectedCategory,
-    selectedCondition,
-    selectedPrice,
-    sortOption,
-  ]);
-
-  const newestBooks = useMemo(() => {
-    return safeBooks
-      .filter((book) => book.createdAt && book.status !== "sold")
-      .sort(
-        (firstBook, secondBook) =>
-          new Date(secondBook.createdAt) - new Date(firstBook.createdAt),
-      )
-      .slice(0, 5);
-  }, [safeBooks]);
-
-  // "Sách giá tốt" = giá thấp nhất trong số sách còn hàng.
-  // Không hiển thị giá gốc/giảm giá giả vì backend chưa có field đó.
-  const bestPriceBooks = useMemo(() => {
-    return safeBooks
-      .filter((book) => book.status !== "sold" && Number(book.price) > 0)
-      .sort(
-        (firstBook, secondBook) =>
-          Number(firstBook.price) - Number(secondBook.price),
-      )
-      .slice(0, 5);
-  }, [safeBooks]);
-
-  // "Giáo trình nổi bật" chỉ tạo khi thực sự có sách thuộc danh mục
-  // "Giáo trình" trong dữ liệu — không tự bịa section rỗng.
-  const hasTextbookCategory = categories.includes("Giáo trình đại cương");
-
-  const textbookBooks = useMemo(() => {
-    if (!hasTextbookCategory) {
-      return [];
-    }
-
-    return [...safeBooks]
-      .filter(
-        (book) =>
-          book.category === "Giáo trình đại cương" && book.status !== "sold",
-      )
-      .sort((firstBook, secondBook) => {
-        const firstDate = firstBook.createdAt
-          ? new Date(firstBook.createdAt).getTime()
-          : 0;
-
-        const secondDate = secondBook.createdAt
-          ? new Date(secondBook.createdAt).getTime()
-          : 0;
-
-        return secondDate - firstDate;
-      })
-      .slice(0, 5);
-  }, [safeBooks, hasTextbookCategory]);
   const popularCategories = useMemo(() => {
     return Object.entries(categoryCounts)
       .sort((first, second) => second[1] - first[1])
       .slice(0, 8);
   }, [categoryCounts]);
 
-  const heroMainBook = newestBooks[0] || safeBooks[0] || null;
+  const statistics = useMemo(() => {
+    const sevenDays = 7 * 24 * 60 * 60 * 1000;
+
+    const newBooksCount = statsSample.filter((book) => {
+      if (!book.createdAt) return false;
+
+      const createdAt = new Date(book.createdAt);
+
+      return (
+        !Number.isNaN(createdAt.getTime()) &&
+        Date.now() - createdAt.getTime() <= sevenDays
+      );
+    }).length;
+
+    const sellerIds = new Set(
+      statsSample
+        .map((book) => {
+          const seller = book?.sellerId;
+
+          if (!seller) return "";
+
+          return typeof seller === "object"
+            ? String(seller._id || seller.id || "")
+            : String(seller);
+        })
+        .filter(Boolean),
+    );
+
+    return {
+      totalBooks: totalCount,
+      totalCategories: Object.keys(categoryCounts).length,
+      totalSellers: sellerIds.size,
+      newBooks: newBooksCount,
+    };
+  }, [statsSample, categoryCounts, totalCount]);
+
+  const hasTextbookCategory = textbookBooks.length > 0;
+
+  const heroMainBook = newestBooks[0] || books[0] || null;
   const heroSideBooks = [bestPriceBooks[0] || null, newestBooks[1] || null];
 
+  // Gợi ý tìm kiếm nhanh — lấy trên mẫu thống kê (xấp xỉ, không phải
+  // toàn catalog, chấp nhận được vì chỉ là gợi ý tham khảo).
   const suggestions = useMemo(() => {
-    const keyword = normalizeText(searchTerm);
+    const keyword = normalizeText(filters.search);
 
     if (!keyword) return [];
 
-    return safeBooks
+    return statsSample
       .filter((book) =>
         normalizeText(`${book.title || ""} ${book.author || ""}`).includes(
           keyword,
         ),
       )
       .slice(0, 5);
-  }, [safeBooks, searchTerm]);
-
-  const visibleBooks = filteredBooks.slice(0, visibleCount);
+  }, [statsSample, filters.search]);
 
   const hasActiveFilters =
-    searchTerm.trim() ||
-    selectedCategory !== "All" ||
-    selectedCondition !== "All" ||
-    selectedPrice !== "All" ||
-    sortOption !== "newest";
+    filters.search.trim() !== "" ||
+    filters.category !== "" ||
+    filters.condition !== "" ||
+    selectedPriceKey !== "All" ||
+    filters.sort !== "newest";
+
+  const handleSelectPrice = (key) => {
+    setSelectedPriceKey(key);
+
+    const bucket = PRICE_BUCKETS[key];
+
+    setPriceRange(bucket?.min, bucket?.max);
+  };
 
   const scrollToBooks = (category) => {
     if (category) {
-      setSelectedCategory(category);
+      setCategory(category);
     }
 
     booksSectionRef.current?.scrollIntoView({
@@ -407,11 +324,8 @@ const Home = () => {
   };
 
   const resetFilters = () => {
-    setSearchTerm("");
-    setSelectedCategory("All");
-    setSelectedCondition("All");
-    setSelectedPrice("All");
-    setSortOption("newest");
+    resetCatalogFilters();
+    setSelectedPriceKey("All");
   };
 
   return (
@@ -464,7 +378,7 @@ const Home = () => {
                 <button
                   type="button"
                   onClick={() => {
-                    setSelectedCategory("All");
+                    setCategory("");
                     setCategoryMenuOpen(false);
                     scrollToBooks();
                   }}
@@ -474,55 +388,66 @@ const Home = () => {
                   📚 Tất cả danh mục
                 </button>
 
-                {categories
-                  .filter((category) => category !== "All")
-                  .map((category) => {
-                    const meta = CATEGORY_META[category];
+                {BOOK_CATEGORIES.map((category) => {
+                  const meta = CATEGORY_META[category];
 
-                    return (
-                      <button
-                        key={category}
-                        type="button"
-                        onClick={() => {
-                          setSelectedCategory(category);
-                          setCategoryMenuOpen(false);
-                          scrollToBooks();
-                        }}
-                        className="flex w-full items-center gap-2.5 border-t px-4 py-2.5 text-left text-sm font-semibold hover:bg-slate-50"
-                        style={{
-                          borderColor: PALETTE.line,
-                          color: PALETTE.ink,
-                        }}
-                      >
-                        <span>{meta?.icon || "📖"}</span>
-                        {category}
-                      </button>
-                    );
-                  })}
+                  return (
+                    <button
+                      key={category}
+                      type="button"
+                      onClick={() => {
+                        setCategory(category);
+                        setCategoryMenuOpen(false);
+                        scrollToBooks();
+                      }}
+                      className="flex w-full items-center gap-2.5 border-t px-4 py-2.5 text-left text-sm font-semibold hover:bg-slate-50"
+                      style={{
+                        borderColor: PALETTE.line,
+                        color: PALETTE.ink,
+                      }}
+                    >
+                      <span>{meta?.icon || "📖"}</span>
+                      {category}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
 
-          <div className="sachsv-scroll flex flex-1 items-center gap-1 overflow-x-auto">
-            {categories.map((category) => {
-              const active = selectedCategory === category;
-              const meta = CATEGORY_META[category];
+          <div className="relative min-w-0 flex-1">
+            <div className="sachsv-scroll flex items-center gap-0.5 overflow-x-auto">
+              {CATEGORY_OPTIONS.map((category) => {
+                const active = (filters.category || "All") === category;
+                const meta = CATEGORY_META[category];
 
-              return (
-                <button
-                  key={category}
-                  type="button"
-                  onClick={() => setSelectedCategory(category)}
-                  className="shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-semibold transition"
-                  style={{
-                    color: active ? PALETTE.primary : PALETTE.muted,
-                    backgroundColor: active ? PALETTE.cream : "transparent",
-                  }}
-                >
-                  {category === "All" ? "Tất cả" : meta?.short || category}
-                </button>
-              );
-            })}
+                return (
+                  <button
+                    key={category}
+                    type="button"
+                    onClick={() =>
+                      setCategory(category === "All" ? "" : category)
+                    }
+                    className="shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-[13px] font-semibold transition"
+                    style={{
+                      color: active ? PALETTE.primary : PALETTE.muted,
+                      backgroundColor: active ? PALETTE.cream : "transparent",
+                    }}
+                  >
+                    {category === "All" ? "Tất cả" : meta?.short || category}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Gợi ý còn danh mục cuộn tiếp — mờ dần thay vì cắt cụt lộ liễu */}
+            <div
+              className="pointer-events-none absolute right-0 top-0 h-full w-10"
+              style={{
+                background:
+                  "linear-gradient(to right, rgba(255,255,255,0), rgba(255,255,255,1))",
+              }}
+            />
           </div>
         </div>
       </div>
@@ -705,12 +630,12 @@ const Home = () => {
 
               <input
                 type="text"
-                value={searchTerm}
+                value={filters.search}
                 onFocus={() => setSearchFocused(true)}
                 onBlur={() =>
                   window.setTimeout(() => setSearchFocused(false), 150)
                 }
-                onChange={(event) => setSearchTerm(event.target.value)}
+                onChange={(event) => setSearch(event.target.value)}
                 placeholder="Tìm kiếm sách, tác giả, ngành học..."
                 className="h-12 w-full rounded-xl border bg-slate-50 pl-11 pr-11 text-sm outline-none transition focus:bg-white focus:ring-2"
                 style={{
@@ -719,10 +644,10 @@ const Home = () => {
                 }}
               />
 
-              {searchTerm && (
+              {filters.search && (
                 <button
                   type="button"
-                  onClick={() => setSearchTerm("")}
+                  onClick={() => setSearch("")}
                   className="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-sm transition hover:bg-slate-200"
                   style={{ color: PALETTE.muted }}
                   aria-label="Xóa nội dung tìm kiếm"
@@ -741,7 +666,7 @@ const Home = () => {
                       key={book._id}
                       type="button"
                       onMouseDown={() => {
-                        setSearchTerm(book.title || "");
+                        setSearch(book.title || "");
                         setSearchFocused(false);
                       }}
                       className="flex w-full items-center gap-3 border-b px-4 py-3 text-left transition hover:bg-slate-50"
@@ -771,8 +696,12 @@ const Home = () => {
             </div>
 
             <select
-              value={selectedCategory}
-              onChange={(event) => setSelectedCategory(event.target.value)}
+              value={filters.category || "All"}
+              onChange={(event) =>
+                setCategory(
+                  event.target.value === "All" ? "" : event.target.value,
+                )
+              }
               className="h-12 rounded-xl border bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:bg-white focus:ring-2"
               style={{
                 borderColor: PALETTE.line,
@@ -781,18 +710,20 @@ const Home = () => {
             >
               <option value="All">Tất cả danh mục</option>
 
-              {categories
-                .filter((category) => category !== "All")
-                .map((category) => (
-                  <option key={category} value={category}>
-                    {category}
-                  </option>
-                ))}
+              {BOOK_CATEGORIES.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
             </select>
 
             <select
-              value={selectedCondition}
-              onChange={(event) => setSelectedCondition(event.target.value)}
+              value={filters.condition || "All"}
+              onChange={(event) =>
+                setCondition(
+                  event.target.value === "All" ? "" : event.target.value,
+                )
+              }
               className="h-12 rounded-xl border bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:bg-white focus:ring-2"
               style={{
                 borderColor: PALETTE.line,
@@ -806,8 +737,8 @@ const Home = () => {
             </select>
 
             <select
-              value={selectedPrice}
-              onChange={(event) => setSelectedPrice(event.target.value)}
+              value={selectedPriceKey}
+              onChange={(event) => handleSelectPrice(event.target.value)}
               className="h-12 rounded-xl border bg-slate-50 px-4 text-sm font-semibold outline-none transition focus:bg-white focus:ring-2"
               style={{
                 borderColor: PALETTE.line,
@@ -817,7 +748,8 @@ const Home = () => {
               <option value="All">Mọi mức giá</option>
               <option value="under-50">Dưới 50.000đ</option>
               <option value="50-100">50.000đ – 100.000đ</option>
-              <option value="over-100">Trên 100.000đ</option>
+              <option value="100-200">100.000đ – 200.000đ</option>
+              <option value="over-200">Trên 200.000đ</option>
             </select>
 
             <button
@@ -837,7 +769,8 @@ const Home = () => {
       </section>
 
       {/* ==================================================
-          THỐNG KÊ (tính từ dữ liệu sách thật)
+          THỐNG KÊ (xấp xỉ — mẫu 50 sách mới nhất, không phải tổng
+          chính xác toàn catalog)
       ================================================== */}
       <section className="mx-auto mt-6 max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -1025,42 +958,39 @@ const Home = () => {
       {/* ==================================================
           GIÁO TRÌNH NỔI BẬT (chỉ hiện khi dữ liệu có danh mục này)
       ================================================== */}
-      {!loading &&
-        !error &&
-        hasTextbookCategory &&
-        textbookBooks.length > 0 && (
-          <section className="mx-auto mt-12 max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div
-              className="flex items-end justify-between border-b pb-4"
-              style={{ borderColor: PALETTE.line }}
-            >
-              <div>
-                <h2
-                  className="text-2xl font-bold"
-                  style={{ color: PALETTE.ink, fontFamily: FONT_SERIF }}
-                >
-                  Giáo trình nổi bật
-                </h2>
-                <p className="mt-1 text-sm" style={{ color: PALETTE.muted }}>
-                  {textbookBooks.length} giáo trình đang được rao bán
-                </p>
-              </div>
-              <Link
-                to="/giao-trinh-noi-bat"
-                className="text-sm font-extrabold hover:underline"
-                style={{ color: PALETTE.primary }}
+      {!loading && !error && hasTextbookCategory && (
+        <section className="mx-auto mt-12 max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div
+            className="flex items-end justify-between border-b pb-4"
+            style={{ borderColor: PALETTE.line }}
+          >
+            <div>
+              <h2
+                className="text-2xl font-bold"
+                style={{ color: PALETTE.ink, fontFamily: FONT_SERIF }}
               >
-                Xem tất cả →
-              </Link>
+                Giáo trình nổi bật
+              </h2>
+              <p className="mt-1 text-sm" style={{ color: PALETTE.muted }}>
+                {textbookBooks.length} giáo trình đang được rao bán
+              </p>
             </div>
+            <Link
+              to="/giao-trinh-noi-bat"
+              className="text-sm font-extrabold hover:underline"
+              style={{ color: PALETTE.primary }}
+            >
+              Xem tất cả →
+            </Link>
+          </div>
 
-            <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-              {textbookBooks.map((book) => (
-                <BookCard key={book._id} book={book} />
-              ))}
-            </div>
-          </section>
-        )}
+          <div className="mt-5 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+            {textbookBooks.map((book) => (
+              <BookCard key={book._id} book={book} />
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* ==================================================
           TẤT CẢ SÁCH — CATALOG CHÍNH
@@ -1118,9 +1048,7 @@ const Home = () => {
               ) : (
                 <>
                   Tìm thấy{" "}
-                  <span style={{ color: PALETTE.primary }}>
-                    {filteredBooks.length}
-                  </span>{" "}
+                  <span style={{ color: PALETTE.primary }}>{totalCount}</span>{" "}
                   cuốn phù hợp với bộ lọc hiện tại
                 </>
               )}
@@ -1128,8 +1056,8 @@ const Home = () => {
 
             <div className="flex flex-wrap items-center gap-2">
               <select
-                value={sortOption}
-                onChange={(event) => setSortOption(event.target.value)}
+                value={filters.sort}
+                onChange={(event) => setSort(event.target.value)}
                 className="h-10 rounded-lg border bg-white px-3 text-xs font-semibold outline-none transition focus:ring-2"
                 style={{
                   borderColor: PALETTE.line,
@@ -1207,7 +1135,7 @@ const Home = () => {
 
               <button
                 type="button"
-                onClick={fetchBooks}
+                onClick={reload}
                 className="mt-5 rounded-xl px-5 py-2.5 text-sm font-extrabold text-white transition hover:brightness-110"
                 style={{ backgroundColor: PALETTE.primary }}
               >
@@ -1219,10 +1147,10 @@ const Home = () => {
           {/* DANH SÁCH SÁCH */}
           {!loading &&
             !error &&
-            (filteredBooks.length > 0 ? (
+            (books.length > 0 ? (
               <>
                 <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-                  {visibleBooks.map((book) => (
+                  {books.map((book) => (
                     <div key={book._id} className="flex h-full">
                       <BookCard book={book} />
                     </div>
@@ -1230,18 +1158,19 @@ const Home = () => {
                 </div>
 
                 <div className="mt-8 flex flex-col items-center gap-2">
-                  {visibleCount < filteredBooks.length && (
+                  {hasMore && (
                     <button
                       type="button"
-                      onClick={() => setVisibleCount((count) => count + 8)}
-                      className="rounded-xl border-2 px-8 py-3 text-sm font-extrabold shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"
+                      disabled={loadingMore}
+                      onClick={loadMore}
+                      className="rounded-xl border-2 px-8 py-3 text-sm font-extrabold shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg disabled:opacity-50"
                       style={{
                         borderColor: PALETTE.primary,
                         color: PALETTE.primary,
                         backgroundColor: PALETTE.white,
                       }}
                     >
-                      Xem thêm sách
+                      {loadingMore ? "Đang tải..." : "Xem thêm sách"}
                     </button>
                   )}
 
@@ -1249,8 +1178,7 @@ const Home = () => {
                     className="text-xs font-semibold"
                     style={{ color: PALETTE.muted }}
                   >
-                    Đang xem {Math.min(visibleCount, filteredBooks.length)} /{" "}
-                    {filteredBooks.length} sách
+                    Đang xem {books.length} / {totalCount} sách
                   </p>
                 </div>
               </>

@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import api from "../services/api";
+import { getPlaceholderImage } from "../utils/placeholderImage";
 
 const conditionMap = {
   new: "Mới 100%",
@@ -154,7 +155,7 @@ const Wishlist = () => {
                     <img
                       src={
                         book.images?.[0] ||
-                        "https://via.placeholder.com/120x160?text=Sach"
+                        getPlaceholderImage(120, 160, "Sách")
                       }
                       alt={book.title}
                       className="w-24 h-32 object-cover rounded-lg border border-gray-200 shrink-0"

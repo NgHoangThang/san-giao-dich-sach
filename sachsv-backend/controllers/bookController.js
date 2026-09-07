@@ -5,6 +5,7 @@ const Book = require("../models/Book");
 const Order = require("../models/Order");
 const Conversation = require("../models/Conversation");
 const Wishlist = require("../models/Wishlist");
+const respondServerError = require("../utils/respondServerError");
 
 // Chuyển trường tùy chọn thành Number hoặc null
 const toOptionalNumber = (value) => {
@@ -14,6 +15,49 @@ const toOptionalNumber = (value) => {
 
   return Number(value);
 };
+
+// ======================================================
+// XÓA SÁCH AN TOÀN — DÙNG CHUNG cho bookController.deleteBook
+// (admin tự xóa sách của mình) và adminController.deleteBookAdmin
+// (admin xóa sách vi phạm của bất kỳ ai).
+// --------------------------------------------------------
+// Trước đây 2 nơi này có 2 tiêu chuẩn an toàn khác nhau:
+// deleteBook kiểm tra Order/Conversation trước khi hard-delete,
+// còn deleteBookAdmin gọi thẳng Book.findByIdAndDelete() nên có
+// thể để lại Order/Conversation mồ côi (bookId trỏ vào sách không
+// còn tồn tại). Gộp về 1 hàm để không thể lệch nhau lần nữa.
+// --------------------------------------------------------
+// Nhận vào 1 Book document đã fetch sẵn (để nơi gọi tự quyết định
+// việc kiểm tra quyền/điều kiện riêng của mình trước, ví dụ
+// deleteBook chặn sách "sold" còn deleteBookAdmin thì không).
+// Trả về { hardDeleted, orderCount, conversationCount } để nơi gọi
+// tự dựng message phù hợp ngữ cảnh của mình.
+// ======================================================
+const deleteBookSafely = async (book) => {
+  const [orderCount, conversationCount] = await Promise.all([
+    Order.countDocuments({ bookId: book._id }),
+    Conversation.countDocuments({ bookId: book._id }),
+  ]);
+
+  if (orderCount === 0 && conversationCount === 0) {
+    // Chỉ dọn Wishlist khi sách thực sự biến mất khỏi DB — soft-delete
+    // thì Wishlist vẫn còn ý nghĩa (sách chỉ tạm ẩn, không phải không
+    // còn tồn tại).
+    await Wishlist.deleteMany({ bookId: book._id });
+
+    await Book.deleteOne({ _id: book._id });
+
+    return { hardDeleted: true, orderCount, conversationCount };
+  }
+
+  book.status = "deleted";
+
+  await book.save();
+
+  return { hardDeleted: false, orderCount, conversationCount };
+};
+
+exports.deleteBookSafely = deleteBookSafely;
 
 // ======================================================
 // 1. API ĐĂNG SÁCH MỚI
@@ -170,12 +214,7 @@ exports.createBook = async (req, res) => {
       book: newBook,
     });
   } catch (error) {
-    console.error("Lỗi createBook:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi đăng sách",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi đăng sách");
   }
 };
 
@@ -224,14 +263,82 @@ exports.getAllBooks = async (req, res) => {
       ];
     }
 
+    // ĐÃ THÊM: lọc theo tình trạng sách — whitelist cứng, không nhận
+    // chuỗi tự do từ client (endpoint này công khai, không xác thực).
+    const ALLOWED_CONDITIONS = ["new", "like-new", "used"];
+
+    if (ALLOWED_CONDITIONS.includes(req.query.condition)) {
+      query.condition = req.query.condition;
+    }
+
+    // ĐÃ THÊM: lọc theo khoảng giá. Number(undefined) -> NaN nên thiếu
+    // tham số tự động là no-op, không cần kiểm tra tồn tại riêng.
+    const priceFilter = {};
+
+    const minPrice = Number(req.query.minPrice);
+
+    const maxPrice = Number(req.query.maxPrice);
+
+    if (Number.isFinite(minPrice) && minPrice >= 0) {
+      priceFilter.$gte = minPrice;
+    }
+
+    if (Number.isFinite(maxPrice) && maxPrice >= 0) {
+      priceFilter.$lte = maxPrice;
+    }
+
+    if (Object.keys(priceFilter).length > 0) {
+      query.price = priceFilter;
+    }
+
+    // ĐÃ THÊM: lọc theo thời gian đăng (dùng cho "Sách mới đăng" lọc
+    // trong N ngày qua) — xử lý ở server để không lặp lại lỗi phân
+    // trang cụt dữ liệu (lọc tay ở trình duyệt trên tập đã phân trang).
+    const RECENCY_DAYS_MAP = {
+      today: 1,
+      "3days": 3,
+      "7days": 7,
+      "30days": 30,
+    };
+
+    if (Object.prototype.hasOwnProperty.call(RECENCY_DAYS_MAP, req.query.recency)) {
+      const days = RECENCY_DAYS_MAP[req.query.recency];
+
+      query.createdAt = {
+        $gte: new Date(Date.now() - days * 24 * 60 * 60 * 1000),
+      };
+    }
+
+    // ĐÃ THÊM: sắp xếp theo lựa chọn người dùng — bảng tra whitelist,
+    // không đưa thẳng req.query.sort vào lệnh .sort() của Mongo.
+    const SORT_MAP = {
+      newest: { createdAt: -1 },
+      oldest: { createdAt: 1 },
+      "price-low": { price: 1 },
+      "price-high": { price: -1 },
+      title: { title: 1 },
+    };
+
+    const sortKey = Object.prototype.hasOwnProperty.call(SORT_MAP, req.query.sort)
+      ? req.query.sort
+      : "newest";
+
+    const sortSpec = SORT_MAP[sortKey];
+
+    let booksQuery = Book.find(query)
+      .populate("sellerId", "fullName university phoneNumber")
+      .sort(sortSpec)
+      .skip(skip)
+      .limit(limit);
+
+    // Sắp xếp tiếng Việt đúng dấu (giống cách frontend đang dùng
+    // localeCompare(str, "vi")) — chỉ cần khi sort theo tên.
+    if (sortKey === "title") {
+      booksQuery = booksQuery.collation({ locale: "vi" });
+    }
+
     const [books, totalCount] = await Promise.all([
-      Book.find(query)
-        .populate("sellerId", "fullName university phoneNumber")
-        .sort({
-          createdAt: -1,
-        })
-        .skip(skip)
-        .limit(limit),
+      booksQuery,
 
       Book.countDocuments(query),
     ]);
@@ -246,12 +353,11 @@ exports.getAllBooks = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Lỗi getAllBooks:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy danh sách sách",
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi lấy danh sách sách",
+    );
   }
 };
 
@@ -272,12 +378,7 @@ exports.getMyBooks = async (req, res) => {
       data: myBooks,
     });
   } catch (error) {
-    console.error("Lỗi getMyBooks:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy sách cá nhân",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi lấy sách cá nhân");
   }
 };
 
@@ -292,19 +393,12 @@ exports.getBookById = async (req, res) => {
     );
 
     if (!book) {
-      return res.status(404).json({
-        message: "Không tìm thấy sách",
-      });
+      return res.status(404).json({ message: "Không tìm thấy sách" });
     }
 
     return res.status(200).json(book);
   } catch (error) {
-    console.error("Lỗi getBookById:", error);
-
-    return res.status(500).json({
-      message: "Lỗi khi lấy chi tiết sách",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi khi lấy chi tiết sách");
   }
 };
 
@@ -437,12 +531,7 @@ exports.updateBook = async (req, res) => {
       book,
     });
   } catch (error) {
-    console.error("Lỗi updateBook:", error);
-
-    return res.status(500).json({
-      message: "Lỗi khi cập nhật sách",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi khi cập nhật sách");
   }
 };
 
@@ -482,42 +571,30 @@ exports.deleteBook = async (req, res) => {
     //   - Đã có đơn hàng / tin nhắn   -> chỉ xóa mềm, vì
     //     xóa hẳn sẽ làm lịch sử mua hàng của khách trỏ
     //     vào một cuốn sách không còn tồn tại
+    // ĐÃ SỬA: logic đếm Order/Conversation + quyết định hard/soft
+    // delete được trích ra deleteBookSafely() ở trên để
+    // adminController.deleteBookAdmin dùng chung, tránh 2 nơi xóa
+    // sách lệch tiêu chuẩn an toàn với nhau.
     // ==================================================
-    const [soDonHang, soHoiThoai] = await Promise.all([
-      Order.countDocuments({ bookId: book._id }),
-      Conversation.countDocuments({ bookId: book._id }),
-    ]);
+    const { hardDeleted, orderCount, conversationCount } =
+      await deleteBookSafely(book);
 
-    if (soDonHang === 0 && soHoiThoai === 0) {
-      // Wishlist xóa theo được, không ảnh hưởng lịch sử giao dịch
-      await Wishlist.deleteMany({ bookId: book._id });
-
-      await Book.deleteOne({ _id: book._id });
-
+    if (hardDeleted) {
       return res.status(200).json({
         message: "Đã xóa vĩnh viễn cuốn sách này!",
         hardDeleted: true,
       });
     }
 
-    book.status = "deleted";
-
-    await book.save();
-
     return res.status(200).json({
       message:
         `Sách đã được ẩn khỏi cửa hàng. Không thể xóa vĩnh viễn vì đang có ` +
-        `${soDonHang} đơn hàng và ${soHoiThoai} cuộc trò chuyện liên quan — ` +
+        `${orderCount} đơn hàng và ${conversationCount} cuộc trò chuyện liên quan — ` +
         `xóa hẳn sẽ làm hỏng lịch sử mua hàng của khách.`,
       hardDeleted: false,
     });
   } catch (error) {
-    console.error("Lỗi deleteBook:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi xóa sách",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi xóa sách");
   }
 };
 
@@ -537,12 +614,7 @@ exports.getBooksBySeller = async (req, res) => {
 
     return res.status(200).json(books);
   } catch (error) {
-    console.error("Lỗi getBooksBySeller:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -576,12 +648,7 @@ exports.markAsSold = async (req, res) => {
       book,
     });
   } catch (error) {
-    console.error("Lỗi markAsSold:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -615,12 +682,7 @@ exports.hideBook = async (req, res) => {
       book,
     });
   } catch (error) {
-    console.error("Lỗi hideBook:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server");
   }
 };
 
@@ -654,11 +716,6 @@ exports.showBook = async (req, res) => {
       book,
     });
   } catch (error) {
-    console.error("Lỗi showBook:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server");
   }
 };

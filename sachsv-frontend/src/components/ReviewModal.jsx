@@ -93,7 +93,11 @@ const ReviewModal = ({ isOpen, order, onClose, onSuccess }) => {
             <p className="text-sm text-gray-500 mt-1">
               Sách:{" "}
               <span className="font-medium text-gray-700">
-                {order.bookId?.title || "Không xác định"}
+                {/* ĐÃ SỬA: Order giờ chứa nhiều sách qua items[] thay vì
+                    1 bookId duy nhất */}
+                {order.items?.length === 1
+                  ? order.items[0].title || "Không xác định"
+                  : `${order.items?.length || 0} loại sách`}
               </span>
             </p>
           </div>

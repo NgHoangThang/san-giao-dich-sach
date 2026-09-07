@@ -1,5 +1,6 @@
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
+const respondServerError = require("../utils/respondServerError");
 
 // ======================================================
 // 1. TẠO HOẶC LẤY CUỘC TRÒ CHUYỆN
@@ -52,12 +53,11 @@ exports.getOrCreateConversation = async (req, res) => {
 
     return res.status(200).json(conversation);
   } catch (error) {
-    console.error("Lỗi getOrCreateConversation:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi tạo cuộc trò chuyện",
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi tạo cuộc trò chuyện",
+    );
   }
 };
 
@@ -101,12 +101,11 @@ exports.getMyConversations = async (req, res) => {
 
     return res.status(200).json(conversationsWithUnread);
   } catch (error) {
-    console.error("Lỗi getMyConversations:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy danh sách cuộc trò chuyện",
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi lấy danh sách cuộc trò chuyện",
+    );
   }
 };
 
@@ -150,12 +149,7 @@ exports.getConversationById = async (req, res) => {
 
     return res.status(200).json(conversation);
   } catch (error) {
-    console.error("Lỗi getConversationById:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy cuộc trò chuyện",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi lấy cuộc trò chuyện");
   }
 };
 
@@ -203,11 +197,6 @@ exports.deleteConversationForMe = async (req, res) => {
       message: "Đã xóa cuộc trò chuyện khỏi tài khoản của bạn",
     });
   } catch (error) {
-    console.error("Lỗi deleteConversationForMe:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi xóa cuộc trò chuyện",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi xóa cuộc trò chuyện");
   }
 };

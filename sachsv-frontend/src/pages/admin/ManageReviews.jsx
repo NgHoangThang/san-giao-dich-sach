@@ -59,12 +59,31 @@ const getSeller = (review) =>
 const getOrder = (review) =>
   review?.orderId && typeof review.orderId === "object" ? review.orderId : null;
 
+// ĐÃ SỬA: Order giờ chứa nhiều sách qua items[] thay vì 1 bookId duy
+// nhất. Trang này (thống kê/kiểm duyệt đánh giá) chỉ cần đại diện 1
+// sách để hiển thị nên lấy item đầu tiên — ưu tiên title/price snapshot
+// lưu sẵn trong item (đáng tin cậy hơn vì không phụ thuộc sách còn
+// tồn tại hay không), merge thêm author/images từ Book đã populate
+// nếu có.
 const getBook = (review) => {
   const order = getOrder(review);
 
-  return order?.bookId && typeof order.bookId === "object"
-    ? order.bookId
-    : null;
+  const firstItem = order?.items?.[0];
+
+  if (!firstItem) {
+    return null;
+  }
+
+  const populatedBook =
+    firstItem.bookId && typeof firstItem.bookId === "object"
+      ? firstItem.bookId
+      : null;
+
+  return {
+    ...(populatedBook || {}),
+    title: firstItem.title || populatedBook?.title,
+    price: firstItem.price ?? populatedBook?.price,
+  };
 };
 
 const analyzeReview = (review) => {
@@ -1110,7 +1129,7 @@ const ManageReviews = () => {
                     Giá trị đơn:{" "}
                     <span className="font-bold text-red-600">
                       {formatMoney(
-                        getOrder(selectedReview)?.price ??
+                        getOrder(selectedReview)?.totalPrice ??
                           getBook(selectedReview)?.price,
                       )}
                     </span>

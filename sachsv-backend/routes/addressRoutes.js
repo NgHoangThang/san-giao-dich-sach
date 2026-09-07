@@ -6,6 +6,7 @@ const addressController = require("../controllers/addressController");
 
 const authMiddleware = require("../middleware/authMiddleware");
 const isUser = require("../middleware/isUser");
+const validateObjectId = require("../middleware/validateObjectId");
 
 // ======================================================
 // LẤY TẤT CẢ ĐỊA CHỈ CỦA USER
@@ -30,6 +31,7 @@ router.patch(
   "/:id/default",
   authMiddleware,
   isUser,
+  validateObjectId("id"),
   addressController.setDefaultAddress,
 );
 
@@ -38,13 +40,25 @@ router.patch(
 // PATCH /api/addresses/:id
 // CHỈ USER ĐƯỢC PHÉP
 // ======================================================
-router.patch("/:id", authMiddleware, isUser, addressController.updateAddress);
+router.patch(
+  "/:id",
+  authMiddleware,
+  isUser,
+  validateObjectId("id"),
+  addressController.updateAddress,
+);
 
 // ======================================================
 // XÓA ĐỊA CHỈ
 // DELETE /api/addresses/:id
 // CHỈ USER ĐƯỢC PHÉP
 // ======================================================
-router.delete("/:id", authMiddleware, isUser, addressController.deleteAddress);
+router.delete(
+  "/:id",
+  authMiddleware,
+  isUser,
+  validateObjectId("id"),
+  addressController.deleteAddress,
+);
 
 module.exports = router;

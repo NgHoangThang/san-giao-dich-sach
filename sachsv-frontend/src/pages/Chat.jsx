@@ -6,6 +6,7 @@ import socket from "../socket";
 
 import api from "../services/api";
 import { useAuth } from "../context/AuthContext";
+import { getPlaceholderImage } from "../utils/placeholderImage";
 
 const Chat = () => {
   const { conversationId } = useParams();
@@ -327,7 +328,7 @@ const Chat = () => {
   const getBookImage = (conversation) => {
     return (
       conversation?.bookId?.images?.[0] ||
-      "https://via.placeholder.com/100x130?text=Sach"
+      getPlaceholderImage(100, 130, "Sách")
     );
   };
 

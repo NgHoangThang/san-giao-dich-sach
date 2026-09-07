@@ -5,6 +5,7 @@ import api from "../services/api";
 import socket from "../socket";
 import { useAuth } from "../context/AuthContext";
 import BookCard from "../components/BookCard";
+import { getPlaceholderImage } from "../utils/placeholderImage";
 
 // ======================================================
 // BẢNG MÀU — đồng bộ với các trang quản trị (ink / rust / brass)
@@ -358,7 +359,7 @@ const SellerProfile = () => {
               {/* Avatar */}
               <img
                 src={
-                  seller.avatar || "https://via.placeholder.com/160?text=Avatar"
+                  seller.avatar || getPlaceholderImage(160, 160, "Avatar")
                 }
                 alt={seller.fullName || "Người bán"}
                 className="w-24 h-24 sm:w-28 sm:h-28 rounded-full object-cover border-4 shadow-sm"
@@ -594,7 +595,7 @@ const SellerProfile = () => {
                         <img
                           src={
                             review.reviewerId?.avatar ||
-                            "https://via.placeholder.com/60?text=User"
+                            getPlaceholderImage(60, 60, "User")
                           }
                           alt={review.reviewerId?.fullName || "Người đánh giá"}
                           className="w-11 h-11 rounded-full object-cover border"

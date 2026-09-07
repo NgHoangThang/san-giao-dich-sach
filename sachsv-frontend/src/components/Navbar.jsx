@@ -25,6 +25,7 @@ const FONT_MONO = "'IBM Plex Mono', monospace";
 const NOTIFICATION_ICONS = {
   order_created: "🛒",
   order_accepted: "✅",
+  payment_confirmed: "💳",
   order_preparing: "📦",
   order_shipping: "🚚",
   order_shipping_update: "🚚",
@@ -84,6 +85,48 @@ const Navbar = () => {
   useEffect(() => {
     loadUnreadMessageCount();
   }, [loadUnreadMessageCount]);
+
+  // ======================================================
+  // LẤY SỐ SÁCH TRONG GIỎ HÀNG
+  // Giỏ hàng chỉ dành cho người mua (student/user), admin không có.
+  // ======================================================
+  const [cartCount, setCartCount] = useState(0);
+
+  const loadCartCount = useCallback(async () => {
+    if (!currentUserId || user?.role === "admin") {
+      setCartCount(0);
+      return;
+    }
+
+    try {
+      const response = await api.get("/api/cart");
+
+      const total = (response.data?.items || []).reduce(
+        (sum, item) => sum + (item.quantity || 0),
+        0,
+      );
+
+      setCartCount(total);
+    } catch (error) {
+      console.error("Lỗi lấy giỏ hàng:", error);
+
+      setCartCount(0);
+    }
+  }, [currentUserId, user?.role]);
+
+  useEffect(() => {
+    loadCartCount();
+  }, [loadCartCount]);
+
+  // Cập nhật số ngay khi giỏ hàng thay đổi ở trang khác (thêm ở
+  // BookDetail, sửa/xóa ở trang Cart) — không cần F5 lại trang.
+  useEffect(() => {
+    const handleCartUpdated = () => loadCartCount();
+
+    window.addEventListener("cart:updated", handleCartUpdated);
+
+    return () => window.removeEventListener("cart:updated", handleCartUpdated);
+  }, [loadCartCount]);
 
   // ======================================================
   // LẤY DANH SÁCH THÔNG BÁO
@@ -225,6 +268,7 @@ const Navbar = () => {
     if (
       notification.type === "order_created" ||
       notification.type === "order_accepted" ||
+      notification.type === "payment_confirmed" ||
       notification.type === "order_preparing" ||
       notification.type === "order_shipping" ||
       notification.type === "order_shipping_update" ||
@@ -638,6 +682,39 @@ const Navbar = () => {
 
             {user ? (
               <>
+                {/* ==============================================
+                    GIỎ HÀNG — CHỈ NGƯỜI MUA, KHÔNG PHẢI ADMIN
+                ============================================== */}
+                {!isAdmin && (
+                  <Link
+                    to="/cart"
+                    className="relative flex h-10 w-10 items-center justify-center rounded-full border bg-white/80 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:bg-[#F8F4EC] hover:shadow-md"
+                    style={{ borderColor: PALETTE.line }}
+                    title="Giỏ hàng"
+                  >
+                    <svg
+                      className="h-6 w-6"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                      style={{ color: PALETTE.ink }}
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m-10 0a2 2 0 100 4 2 2 0 000-4zm10 0a2 2 0 100 4 2 2 0 000-4z"
+                      />
+                    </svg>
+
+                    {cartCount > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-[#8F4338] px-1 text-[10px] font-bold text-white ring-2 ring-white">
+                        {cartCount > 99 ? "99+" : cartCount}
+                      </span>
+                    )}
+                  </Link>
+                )}
+
                 {/* ==============================================
                     CHUÔNG THÔNG BÁO
                 ============================================== */}

@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import { Link } from "react-router-dom";
 
-import api from "../services/api";
 import BookCard from "../components/BookCard";
+import { useBookCatalog } from "../hooks/useBookCatalog";
 
 const PALETTE = {
   primary: "#9A2F27",
@@ -15,57 +15,18 @@ const PALETTE = {
 const FONT_SERIF = "'Fraunces', serif";
 
 const TextbookBooks = () => {
-  const [books, setBooks] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { books, loading, loadingMore, error, hasMore, loadMore, reload } =
+    useBookCatalog({
+      initialFilters: { category: "Giáo trình đại cương", sort: "newest" },
+    });
 
-  useEffect(() => {
-    const fetchBooks = async () => {
-      try {
-        setLoading(true);
-        setError("");
-
-        const response = await api.get("/api/books");
-
-        const responseBooks = Array.isArray(response.data)
-          ? response.data
-          : response.data?.books || response.data?.data || [];
-
-        setBooks(Array.isArray(responseBooks) ? responseBooks : []);
-      } catch (requestError) {
-        console.error("Lỗi tải giáo trình:", requestError);
-
-        setError(
-          requestError.response?.data?.message ||
-            "Không thể kết nối đến máy chủ. Vui lòng thử lại sau.",
-        );
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchBooks();
-  }, []);
-
-  // Chỉ lấy Giáo trình đại cương còn hàng
-  const textbookBooks = useMemo(() => {
-    return [...books]
-      .filter(
-        (book) =>
-          book.category === "Giáo trình đại cương" && book.status !== "sold",
-      )
-      .sort((firstBook, secondBook) => {
-        const firstDate = firstBook.createdAt
-          ? new Date(firstBook.createdAt).getTime()
-          : 0;
-
-        const secondDate = secondBook.createdAt
-          ? new Date(secondBook.createdAt).getTime()
-          : 0;
-
-        return secondDate - firstDate;
-      });
-  }, [books]);
+  // Chỉ hiện giáo trình còn hàng — lọc ở client trên trang đã tải
+  // (logic gốc, giữ nguyên; backend chưa lọc theo status để giữ
+  // phạm vi thay đổi gọn — đã thống nhất khi lên kế hoạch).
+  const textbookBooks = useMemo(
+    () => books.filter((book) => book.status !== "sold"),
+    [books],
+  );
 
   return (
     <div
@@ -193,16 +154,49 @@ const TextbookBooks = () => {
             >
               {error}
             </p>
+
+            <button
+              type="button"
+              onClick={reload}
+              className="mt-5 inline-block rounded-xl px-5 py-2.5 text-sm font-extrabold text-white"
+              style={{
+                backgroundColor: PALETTE.primary,
+              }}
+            >
+              Thử lại
+            </button>
           </div>
         )}
 
         {/* DANH SÁCH */}
         {!loading && !error && textbookBooks.length > 0 && (
-          <div className="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
-            {textbookBooks.map((book) => (
-              <BookCard key={book._id} book={book} />
-            ))}
-          </div>
+          <>
+            <div className="mt-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+              {textbookBooks.map((book) => (
+                <BookCard key={book._id} book={book} />
+              ))}
+            </div>
+
+            {/* ĐÃ THÊM: trang này giờ phân trang thật ở server, nếu
+                không có nút này sẽ lại bị cụt ở 10 cuốn như lỗi cũ. */}
+            {hasMore && (
+              <div className="mt-8 flex justify-center">
+                <button
+                  type="button"
+                  disabled={loadingMore}
+                  onClick={loadMore}
+                  className="rounded-xl border-2 px-6 py-2.5 text-sm font-extrabold transition hover:brightness-95 disabled:opacity-50"
+                  style={{
+                    borderColor: PALETTE.primary,
+                    color: PALETTE.primary,
+                    backgroundColor: "#FFFFFF",
+                  }}
+                >
+                  {loadingMore ? "Đang tải..." : "Xem thêm giáo trình"}
+                </button>
+              </div>
+            )}
+          </>
         )}
 
         {/* KHÔNG CÓ GIÁO TRÌNH */}

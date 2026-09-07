@@ -25,6 +25,7 @@ import ForgotPassword from "./pages/ForgotPassword";
 import BookDetail from "./pages/BookDetail";
 import CreateBook from "./pages/CreateBook";
 import MyBooks from "./pages/MyBooks";
+import Cart from "./pages/Cart";
 import Orders from "./pages/Orders";
 import Chat from "./pages/Chat";
 import Profile from "./pages/Profile";
@@ -143,6 +144,16 @@ function App() {
                   ROUTE USER + ADMIN
                   PHẢI ĐĂNG NHẬP
               ================================================== */}
+
+              {/* Giỏ hàng */}
+              <Route
+                path="/cart"
+                element={
+                  <ProtectedRoute>
+                    <Cart />
+                  </ProtectedRoute>
+                }
+              />
 
               {/* Đơn hàng */}
               <Route

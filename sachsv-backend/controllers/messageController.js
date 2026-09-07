@@ -1,5 +1,6 @@
 const Message = require("../models/Message");
 const Conversation = require("../models/Conversation");
+const respondServerError = require("../utils/respondServerError");
 
 // ======================================================
 // 1. GỬI TIN NHẮN
@@ -77,12 +78,7 @@ exports.sendMessage = async (req, res) => {
 
     return res.status(201).json(message);
   } catch (error) {
-    console.error("Lỗi sendMessage:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi gửi tin nhắn",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi gửi tin nhắn");
   }
 };
 
@@ -132,12 +128,7 @@ exports.getMessages = async (req, res) => {
 
     return res.status(200).json(messages);
   } catch (error) {
-    console.error("Lỗi getMessages:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi lấy tin nhắn",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi lấy tin nhắn");
   }
 };
 
@@ -179,12 +170,11 @@ exports.getUnreadCount = async (req, res) => {
       unreadCount,
     });
   } catch (error) {
-    console.error("Lỗi getUnreadCount:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi đếm tin nhắn chưa đọc",
-      error: error.message,
-    });
+    return respondServerError(
+      res,
+      error,
+      "Lỗi server khi đếm tin nhắn chưa đọc",
+    );
   }
 };
 
@@ -246,11 +236,6 @@ exports.markAsRead = async (req, res) => {
       modifiedCount: result.modifiedCount || 0,
     });
   } catch (error) {
-    console.error("Lỗi markAsRead:", error);
-
-    return res.status(500).json({
-      message: "Lỗi server khi đánh dấu đã đọc",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Lỗi server khi đánh dấu đã đọc");
   }
 };

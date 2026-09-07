@@ -1,4 +1,5 @@
 const Address = require("../models/Address");
+const respondServerError = require("../utils/respondServerError");
 
 // ======================================================
 // 1. LẤY DANH SÁCH ĐỊA CHỈ CỦA USER
@@ -17,12 +18,7 @@ exports.getMyAddresses = async (req, res) => {
 
     return res.status(200).json(addresses);
   } catch (error) {
-    console.error("Lỗi getMyAddresses:", error);
-
-    return res.status(500).json({
-      message: "Không thể lấy danh sách địa chỉ",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Không thể lấy danh sách địa chỉ");
   }
 };
 
@@ -139,12 +135,7 @@ exports.createAddress = async (req, res) => {
       address,
     });
   } catch (error) {
-    console.error("Lỗi createAddress:", error);
-
-    return res.status(500).json({
-      message: "Không thể thêm địa chỉ",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Không thể thêm địa chỉ");
   }
 };
 
@@ -277,12 +268,7 @@ exports.updateAddress = async (req, res) => {
       address,
     });
   } catch (error) {
-    console.error("Lỗi updateAddress:", error);
-
-    return res.status(500).json({
-      message: "Không thể cập nhật địa chỉ",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Không thể cập nhật địa chỉ");
   }
 };
 
@@ -333,12 +319,7 @@ exports.setDefaultAddress = async (req, res) => {
       address,
     });
   } catch (error) {
-    console.error("Lỗi setDefaultAddress:", error);
-
-    return res.status(500).json({
-      message: "Không thể đặt địa chỉ mặc định",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Không thể đặt địa chỉ mặc định");
   }
 };
 
@@ -389,11 +370,6 @@ exports.deleteAddress = async (req, res) => {
       message: "Xóa địa chỉ thành công",
     });
   } catch (error) {
-    console.error("Lỗi deleteAddress:", error);
-
-    return res.status(500).json({
-      message: "Không thể xóa địa chỉ",
-      error: error.message,
-    });
+    return respondServerError(res, error, "Không thể xóa địa chỉ");
   }
 };

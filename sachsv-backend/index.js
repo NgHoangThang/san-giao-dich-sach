@@ -82,6 +82,9 @@ app.use("/api/wishlist", wishlistRoutes);
 const orderRoutes = require("./routes/orderRoutes");
 app.use("/api/orders", orderRoutes);
 
+const cartRoutes = require("./routes/cartRoutes");
+app.use("/api/cart", cartRoutes);
+
 // ======================================================
 // ADDRESS
 // ======================================================

@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useState } from "react";
 import { Link } from "react-router-dom";
 
-import api from "../services/api";
 import BookCard from "../components/BookCard";
+import { useBookCatalog } from "../hooks/useBookCatalog";
+import { BOOK_CATEGORIES } from "../constants/bookCategories";
 
 const PALETTE = {
   primary: "#9A2F27",
@@ -18,159 +19,57 @@ const PALETTE = {
 const FONT_SERIF = "'Fraunces', serif";
 const FONT_MONO = "'IBM Plex Mono', monospace";
 
+// Khoảng giá quy đổi sang minPrice/maxPrice gửi lên backend — biên
+// giữ đúng như logic lọc cũ (VD "100-200" loại trừ đúng 100.000đ,
+// khớp với "> 100000 && <= 200000" trước đây).
+const PRICE_BUCKETS = {
+  "under-50": { max: 49999 },
+  "50-100": { min: 50000, max: 100000 },
+  "100-200": { min: 100001, max: 200000 },
+  "over-200": { min: 200001 },
+};
+
 const AllBooks = () => {
-  const [books, setBooks] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  const [searchTerm, setSearchTerm] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState("All");
-  const [selectedCondition, setSelectedCondition] = useState("All");
-  const [selectedPrice, setSelectedPrice] = useState("All");
-  const [sortOption, setSortOption] = useState("newest");
-
-  const [visibleCount, setVisibleCount] = useState(10);
-
-  // ======================================================
-  // LẤY DANH SÁCH SÁCH
-  // ======================================================
-  const fetchBooks = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError("");
-
-      const response = await api.get("/api/books");
-
-      const responseBooks = Array.isArray(response.data)
-        ? response.data
-        : response.data?.books || response.data?.data || [];
-
-      setBooks(Array.isArray(responseBooks) ? responseBooks : []);
-    } catch (requestError) {
-      console.error("Lỗi tải tất cả sách:", requestError);
-
-      setError(
-        requestError.response?.data?.message ||
-          "Không thể tải danh sách sách. Vui lòng thử lại.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchBooks();
-  }, [fetchBooks]);
-
-  // ======================================================
-  // DANH MỤC LẤY TỪ DỮ LIỆU THẬT
-  // ======================================================
-  const categories = useMemo(() => {
-    return Array.from(
-      new Set(books.map((book) => book.category).filter(Boolean)),
-    );
-  }, [books]);
-
-  // ======================================================
-  // FILTER + SEARCH + SORT
-  // ======================================================
-  const filteredBooks = useMemo(() => {
-    const keyword = searchTerm.trim().toLowerCase();
-
-    const result = books.filter((book) => {
-      const title = String(book.title || "").toLowerCase();
-
-      const author = String(book.author || "").toLowerCase();
-
-      const category = String(book.category || "").toLowerCase();
-
-      const matchSearch =
-        !keyword ||
-        title.includes(keyword) ||
-        author.includes(keyword) ||
-        category.includes(keyword);
-
-      const matchCategory =
-        selectedCategory === "All" || book.category === selectedCategory;
-
-      const matchCondition =
-        selectedCondition === "All" || book.condition === selectedCondition;
-
-      const price = Number(book.price || 0);
-
-      const matchPrice =
-        selectedPrice === "All" ||
-        (selectedPrice === "under-50" && price < 50000) ||
-        (selectedPrice === "50-100" && price >= 50000 && price <= 100000) ||
-        (selectedPrice === "100-200" && price > 100000 && price <= 200000) ||
-        (selectedPrice === "over-200" && price > 200000);
-
-      return matchSearch && matchCategory && matchCondition && matchPrice;
-    });
-
-    return [...result].sort((firstBook, secondBook) => {
-      if (sortOption === "price-low") {
-        return Number(firstBook.price || 0) - Number(secondBook.price || 0);
-      }
-
-      if (sortOption === "price-high") {
-        return Number(secondBook.price || 0) - Number(firstBook.price || 0);
-      }
-
-      if (sortOption === "title") {
-        return String(firstBook.title || "").localeCompare(
-          String(secondBook.title || ""),
-          "vi",
-        );
-      }
-
-      const firstDate = firstBook.createdAt
-        ? new Date(firstBook.createdAt).getTime()
-        : 0;
-
-      const secondDate = secondBook.createdAt
-        ? new Date(secondBook.createdAt).getTime()
-        : 0;
-
-      return secondDate - firstDate;
-    });
-  }, [
+  const {
     books,
-    searchTerm,
-    selectedCategory,
-    selectedCondition,
-    selectedPrice,
-    sortOption,
-  ]);
+    loading,
+    loadingMore,
+    error,
+    totalCount,
+    hasMore,
+    filters,
+    setSearch,
+    setCategory,
+    setCondition,
+    setSort,
+    setPriceRange,
+    resetFilters: resetCatalogFilters,
+    loadMore,
+    reload,
+  } = useBookCatalog({ initialFilters: { sort: "newest" } });
 
-  // ======================================================
-  // RESET VISIBLE COUNT KHI FILTER THAY ĐỔI
-  // ======================================================
-  useEffect(() => {
-    setVisibleCount(10);
-  }, [
-    searchTerm,
-    selectedCategory,
-    selectedCondition,
-    selectedPrice,
-    sortOption,
-  ]);
+  // Chỉ dùng để tô sáng đúng nút/khoảng giá đang chọn trên UI — hook
+  // chỉ lưu minPrice/maxPrice, không lưu "tên khoảng giá".
+  const [selectedPriceKey, setSelectedPriceKey] = useState("All");
 
-  const visibleBooks = filteredBooks.slice(0, visibleCount);
+  const handleSelectPrice = (key) => {
+    setSelectedPriceKey(key);
+
+    const bucket = PRICE_BUCKETS[key];
+
+    setPriceRange(bucket?.min, bucket?.max);
+  };
 
   const hasActiveFilters =
-    searchTerm.trim() !== "" ||
-    selectedCategory !== "All" ||
-    selectedCondition !== "All" ||
-    selectedPrice !== "All" ||
-    sortOption !== "newest";
+    filters.search.trim() !== "" ||
+    filters.category !== "" ||
+    filters.condition !== "" ||
+    selectedPriceKey !== "All" ||
+    filters.sort !== "newest";
 
   const resetFilters = () => {
-    setSearchTerm("");
-    setSelectedCategory("All");
-    setSelectedCondition("All");
-    setSelectedPrice("All");
-    setSortOption("newest");
+    resetCatalogFilters();
+    setSelectedPriceKey("All");
   };
 
   return (
@@ -262,11 +161,11 @@ const AllBooks = () => {
             {!loading && !error && (
               <div className="mt-6 flex flex-wrap gap-3">
                 <span className="rounded-full bg-white/15 px-4 py-2 text-xs font-semibold backdrop-blur">
-                  📖 {books.length} đầu sách
+                  📖 {totalCount} đầu sách
                 </span>
 
                 <span className="rounded-full bg-white/15 px-4 py-2 text-xs font-semibold backdrop-blur">
-                  🗂 {categories.length} danh mục
+                  🗂 {BOOK_CATEGORIES.length} danh mục
                 </span>
 
                 <span className="rounded-full bg-white/15 px-4 py-2 text-xs font-semibold backdrop-blur">
@@ -307,8 +206,8 @@ const AllBooks = () => {
 
             <input
               type="text"
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
+              value={filters.search}
+              onChange={(event) => setSearch(event.target.value)}
               placeholder="Tìm theo tên sách, tác giả hoặc danh mục..."
               className="h-13 w-full rounded-xl border bg-slate-50 py-3.5 pl-12 pr-12 text-sm outline-none transition focus:bg-white focus:ring-2"
               style={{
@@ -316,10 +215,10 @@ const AllBooks = () => {
               }}
             />
 
-            {searchTerm && (
+            {filters.search && (
               <button
                 type="button"
-                onClick={() => setSearchTerm("")}
+                onClick={() => setSearch("")}
                 className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-bold"
                 style={{
                   color: PALETTE.muted,
@@ -333,8 +232,12 @@ const AllBooks = () => {
           {/* FILTER */}
           <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <select
-              value={selectedCategory}
-              onChange={(event) => setSelectedCategory(event.target.value)}
+              value={filters.category || "All"}
+              onChange={(event) =>
+                setCategory(
+                  event.target.value === "All" ? "" : event.target.value,
+                )
+              }
               className="h-11 rounded-xl border bg-white px-3 text-sm font-semibold outline-none"
               style={{
                 borderColor: PALETTE.line,
@@ -342,7 +245,7 @@ const AllBooks = () => {
             >
               <option value="All">Tất cả danh mục</option>
 
-              {categories.map((category) => (
+              {BOOK_CATEGORIES.map((category) => (
                 <option key={category} value={category}>
                   {category}
                 </option>
@@ -350,8 +253,12 @@ const AllBooks = () => {
             </select>
 
             <select
-              value={selectedCondition}
-              onChange={(event) => setSelectedCondition(event.target.value)}
+              value={filters.condition || "All"}
+              onChange={(event) =>
+                setCondition(
+                  event.target.value === "All" ? "" : event.target.value,
+                )
+              }
               className="h-11 rounded-xl border bg-white px-3 text-sm font-semibold outline-none"
               style={{
                 borderColor: PALETTE.line,
@@ -367,8 +274,8 @@ const AllBooks = () => {
             </select>
 
             <select
-              value={selectedPrice}
-              onChange={(event) => setSelectedPrice(event.target.value)}
+              value={selectedPriceKey}
+              onChange={(event) => handleSelectPrice(event.target.value)}
               className="h-11 rounded-xl border bg-white px-3 text-sm font-semibold outline-none"
               style={{
                 borderColor: PALETTE.line,
@@ -386,8 +293,8 @@ const AllBooks = () => {
             </select>
 
             <select
-              value={sortOption}
-              onChange={(event) => setSortOption(event.target.value)}
+              value={filters.sort}
+              onChange={(event) => setSort(event.target.value)}
               className="h-11 rounded-xl border bg-white px-3 text-sm font-semibold outline-none"
               style={{
                 borderColor: PALETTE.line,
@@ -427,13 +334,13 @@ const AllBooks = () => {
                 label: "Trên 200K",
               },
             ].map((item) => {
-              const active = selectedPrice === item.value;
+              const active = selectedPriceKey === item.value;
 
               return (
                 <button
                   key={item.value}
                   type="button"
-                  onClick={() => setSelectedPrice(item.value)}
+                  onClick={() => handleSelectPrice(item.value)}
                   className="rounded-full border px-4 py-2 text-xs font-bold transition hover:-translate-y-0.5"
                   style={{
                     backgroundColor: active ? PALETTE.primary : PALETTE.white,
@@ -485,8 +392,7 @@ const AllBooks = () => {
                   color: PALETTE.muted,
                 }}
               >
-                Tìm thấy{" "}
-                <span className="font-extrabold">{filteredBooks.length}</span>{" "}
+                Tìm thấy <span className="font-extrabold">{totalCount}</span>{" "}
                 cuốn phù hợp
               </p>
             </div>
@@ -570,7 +476,7 @@ const AllBooks = () => {
 
             <button
               type="button"
-              onClick={fetchBooks}
+              onClick={reload}
               className="mt-5 rounded-xl px-6 py-3 text-sm font-extrabold text-white"
               style={{
                 backgroundColor: PALETTE.primary,
@@ -584,16 +490,16 @@ const AllBooks = () => {
         {/* ======================================================
             DANH SÁCH SÁCH
         ====================================================== */}
-        {!loading && !error && filteredBooks.length > 0 && (
+        {!loading && !error && books.length > 0 && (
           <>
             <div className="mt-7 grid grid-cols-1 gap-5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-              {visibleBooks.map((book) => (
+              {books.map((book) => (
                 <BookCard key={book._id} book={book} />
               ))}
             </div>
 
             {/* XEM THÊM */}
-            {visibleCount < filteredBooks.length && (
+            {hasMore && (
               <div className="mt-10 flex flex-col items-center gap-3">
                 <p
                   className="text-sm"
@@ -601,24 +507,22 @@ const AllBooks = () => {
                     color: PALETTE.muted,
                   }}
                 >
-                  Đang xem{" "}
-                  <strong>
-                    {Math.min(visibleCount, filteredBooks.length)}
-                  </strong>{" "}
-                  / <strong>{filteredBooks.length}</strong> sách
+                  Đang xem <strong>{books.length}</strong> /{" "}
+                  <strong>{totalCount}</strong> sách
                 </p>
 
                 <button
                   type="button"
-                  onClick={() => setVisibleCount((previous) => previous + 10)}
-                  className="rounded-xl border px-8 py-3 text-sm font-extrabold shadow-sm transition hover:-translate-y-1 hover:shadow-lg"
+                  disabled={loadingMore}
+                  onClick={loadMore}
+                  className="rounded-xl border px-8 py-3 text-sm font-extrabold shadow-sm transition hover:-translate-y-1 hover:shadow-lg disabled:opacity-50 disabled:hover:translate-y-0"
                   style={{
                     borderColor: PALETTE.gold,
                     backgroundColor: PALETTE.white,
                     color: PALETTE.primary,
                   }}
                 >
-                  Xem thêm sách ↓
+                  {loadingMore ? "Đang tải..." : "Xem thêm sách ↓"}
                 </button>
               </div>
             )}
@@ -628,7 +532,7 @@ const AllBooks = () => {
         {/* ======================================================
             KHÔNG CÓ KẾT QUẢ
         ====================================================== */}
-        {!loading && !error && filteredBooks.length === 0 && (
+        {!loading && !error && books.length === 0 && (
           <div
             className="mt-8 rounded-3xl border bg-white p-12 text-center"
             style={{
